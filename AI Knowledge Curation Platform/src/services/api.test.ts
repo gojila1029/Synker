@@ -140,3 +140,51 @@ describe('auth header injection', () => {
     expect(callOptions?.headers?.['Authorization']).toBeUndefined()
   })
 })
+
+describe('UnauthorizedError on 401', () => {
+  it('is exported from api module', async () => {
+    const module = await import('./api')
+    expect(module.UnauthorizedError).toBeDefined()
+  })
+
+  it('POST throws UnauthorizedError when server returns 401', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('Unauthorized'),
+    }))
+    const { api, UnauthorizedError } = await import('./api')
+    await expect(api.candidates.approve(['id-1'])).rejects.toBeInstanceOf(UnauthorizedError)
+  })
+
+  it('PATCH throws UnauthorizedError when server returns 401', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('Unauthorized'),
+    }))
+    const { api, UnauthorizedError } = await import('./api')
+    await expect(api.settings.update('vault', {})).rejects.toBeInstanceOf(UnauthorizedError)
+  })
+
+  it('DELETE throws UnauthorizedError when server returns 401', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('Unauthorized'),
+    }))
+    const { api, UnauthorizedError } = await import('./api')
+    await expect(api.sources.delete('src-1')).rejects.toBeInstanceOf(UnauthorizedError)
+  })
+
+  it('GET on 401 enters demo mode instead of throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      text: () => Promise.resolve('Unauthorized'),
+    }))
+    const { api, isDemoMode } = await import('./api')
+    await expect(api.topics.list()).resolves.toBeDefined()
+    expect(isDemoMode()).toBe(true)
+  })
+})

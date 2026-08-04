@@ -7,6 +7,10 @@ import { supabase } from "@/lib/supabase";
 
 export const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
 
+export class UnauthorizedError extends Error {
+  constructor() { super("Session expired — please sign in again"); }
+}
+
 let _isDemo = false;
 export const isDemoMode = () => _isDemo;
 
@@ -38,6 +42,7 @@ async function POST<T = void>(path: string, body?: unknown): Promise<T> {
     body: body !== undefined ? JSON.stringify(body) : undefined,
     signal: AbortSignal.timeout(15000),
   });
+  if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
@@ -54,6 +59,7 @@ async function PATCH<T = void>(path: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
     signal: AbortSignal.timeout(15000),
   });
+  if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
@@ -69,6 +75,7 @@ async function DELETE_REQ(path: string): Promise<void> {
     headers: await getAuthHeaders(),
     signal: AbortSignal.timeout(15000),
   });
+  if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
