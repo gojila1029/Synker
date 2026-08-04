@@ -67,6 +67,13 @@ Never close an item without a resolution summary. Never leave Status as `in-prog
 | P3-5 | Frontend / UX | **Status indicator hardcodes "localhost:8000".** The "Connected" chip always shows localhost:8000 regardless of VITE_API_BASE. | `src/app/App.tsx`, `src/services/api.ts` | done | 2026-08-05 — BASE exported from api.ts; sidebar Connected chip displays actual backend host via BASE.replace(protocol).split("/")[0] |
 
 ---
+## P4 — ES256 JWT migration (blocking Railway auth)
+
+| # | Area | Item | Files affected | Status | Notes |
+|---|------|------|----------------|--------|-------|
+| P4-1 | Backend / Security | **HS256 → ES256 JWT verification.** Supabase now signs tokens with ES256 (asymmetric ECDSA P-256). Backend `security.py` still calls `jwt.decode(..., algorithms=["HS256"])` which fails every request with 401. Must switch to `PyJWKClient` + JWKS key lookup + `algorithms=["ES256"]`. | `backend/app/core/security.py`, `backend/pyproject.toml` | done | 2026-08-04 — replaced HS256 shared-secret decode with PyJWKClient + algorithms=["ES256"]; PyJWT[cryptography] extra added to pyproject.toml; JWKS fetched lazily and cached per kid |
+
+---
 ## Completed actions
 
 | # | Item | Completed | Resolution |

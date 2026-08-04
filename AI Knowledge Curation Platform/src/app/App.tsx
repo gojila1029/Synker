@@ -292,14 +292,18 @@ function DashboardScreen() {
                   <p className="text-xs font-mono text-slate-400 mt-0.5">{j.id}</p>
                   {j.error && <p className="text-xs text-red-600 mt-1 line-clamp-1">{j.error}</p>}
                 </div>
-                <Button size="sm" variant="secondary" disabled={retryingIds.has(j.id)} onClick={async () => {
-                  setRetryingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
-                  try { await api.jobs.retry(j.id); toast.success("Retrying…"); refetchStats(); }
-                  catch (e) { toast.error(`Retry failed: ${e instanceof Error ? e.message : "Request failed"}`); }
-                  finally { setRetryingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
-                }}>
-                  <RotateCcw className="size-3" /> {retryingIds.has(j.id) ? "Retrying…" : "Retry"}
-                </Button>
+                {/cuda out of memory|oom|out of memory/i.test(j.error ?? "") ? (
+                  <span className="text-xs text-amber-600 font-medium">Adjust model / device</span>
+                ) : (
+                  <Button size="sm" variant="secondary" disabled={retryingIds.has(j.id)} onClick={async () => {
+                    setRetryingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
+                    try { await api.jobs.retry(j.id); toast.success("Retrying…"); refetchStats(); }
+                    catch (e) { toast.error(`Retry failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+                    finally { setRetryingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
+                  }}>
+                    <RotateCcw className="size-3" /> {retryingIds.has(j.id) ? "Retrying…" : "Retry"}
+                  </Button>
+                )}
               </div>
             ))}
           </div>
