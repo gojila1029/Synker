@@ -12,6 +12,7 @@ export class UnauthorizedError extends Error {
 }
 
 let _isDemo = false;
+let _failStreak = 0;
 export const isDemoMode = () => _isDemo;
 
 async function getAuthHeaders(): Promise<Record<string, string>> {
@@ -27,10 +28,11 @@ async function GET<T>(path: string, fallback: T): Promise<T> {
       signal: AbortSignal.timeout(10000),
     });
     if (!res.ok) throw new Error(`${res.status}`);
+    _failStreak = 0;
     _isDemo = false;
     return res.json() as Promise<T>;
   } catch {
-    _isDemo = true;
+    if (++_failStreak >= 2) _isDemo = true;
     return fallback;
   }
 }
@@ -100,8 +102,16 @@ export const api = {
   },
   candidates: {
     list: () => GET<Candidate[]>("/api/candidates", seedCandidates),
-    approve: (ids: string[]) => POST("/api/candidates/approve", { ids }),
-    reject: (ids: string[]) => POST("/api/candidates/reject", { ids }),
+    approve: async (ids: string[]) => {
+      const res = await POST<{ approved: string[]; affected: number }>("/api/candidates/approve", { ids });
+      if (ids.length > 0 && res.affected === 0) throw new Error("No records updated — IDs may not exist in the database");
+      return res;
+    },
+    reject: async (ids: string[]) => {
+      const res = await POST<{ rejected: string[]; affected: number }>("/api/candidates/reject", { ids });
+      if (ids.length > 0 && res.affected === 0) throw new Error("No records updated — IDs may not exist in the database");
+      return res;
+    },
   },
   jobs: {
     list: () => GET<Job[]>("/api/jobs", seedJobs),

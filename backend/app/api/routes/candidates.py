@@ -64,13 +64,15 @@ async def approve_candidates(
     user_id = current_user["sub"]
     raw_ids = body.get("ids", [])
     ids = [uuid.UUID(i) for i in raw_ids if _is_uuid(i)]
+    affected = 0
     if ids:
-        await db.execute(
+        status = await db.execute(
             "UPDATE candidates SET status='approved', updated_at=now() WHERE id=ANY($1) AND user_id=$2",
             ids,
             uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
         )
-    return {"approved": raw_ids}
+        affected = int(status.split()[-1])
+    return {"approved": raw_ids, "affected": affected}
 
 
 @router.post("/reject")
@@ -82,11 +84,13 @@ async def reject_candidates(
     user_id = current_user["sub"]
     raw_ids = body.get("ids", [])
     ids = [uuid.UUID(i) for i in raw_ids if _is_uuid(i)]
+    affected = 0
     if ids:
-        await db.execute(
+        status = await db.execute(
             "UPDATE candidates SET status='rejected', updated_at=now() WHERE id=ANY($1) AND user_id=$2",
             ids,
             uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
         )
-    return {"rejected": raw_ids}
+        affected = int(status.split()[-1])
+    return {"rejected": raw_ids, "affected": affected}
 

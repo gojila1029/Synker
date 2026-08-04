@@ -1,7 +1,7 @@
 ﻿import type { DashboardStats, ActivityEvent, Topic, Source, Candidate, Job, Note, VaultNode, VaultFile, Settings } from "../types";
 
 export const seedStats: DashboardStats = {
-  pendingApprovals: 14,
+  pendingApprovals: 6,
   activeJobs: 3,
   notesToday: 7,
   sourcesIndexed: 138,
