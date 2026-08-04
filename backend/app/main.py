@@ -55,7 +55,11 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await get_pool()
+    try:
+        await get_pool()
+        _log.info("DB pool initialized")
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("DB pool init failed at startup (%s); will retry on first request", exc)
     yield
     await close_pool()
 

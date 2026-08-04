@@ -1,13 +1,15 @@
 """JWT verification using Supabase JWKS endpoint (ES256)."""
+import logging
 from typing import Any
 
 import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from jwt import PyJWKClient
+from jwt import PyJWKClient, PyJWKClientError
 
 from app.core.config import settings
 
+_log = logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
 _jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
 
@@ -26,7 +28,13 @@ def get_current_user(
             audience="authenticated",
         )
         return payload
+    except PyJWKClientError as exc:
+        _log.warning("JWKS fetch failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+        ) from exc
     except jwt.InvalidTokenError as exc:
+        _log.warning("JWT validation failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
         ) from exc
