@@ -29,11 +29,11 @@ describe('isDemoMode', () => {
     expect(isDemoMode()).toBe(false)
   })
 
-  it('returns true after a GET request fails', async () => {
+  it('stays false after a single GET failure (SYN-008 debounce)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
     const { api, isDemoMode } = await import('./api')
     await api.topics.list()
-    expect(isDemoMode()).toBe(true)
+    expect(isDemoMode()).toBe(false)
   })
 })
 
@@ -177,7 +177,7 @@ describe('UnauthorizedError on 401', () => {
     await expect(api.sources.delete('src-1')).rejects.toBeInstanceOf(UnauthorizedError)
   })
 
-  it('GET on 401 enters demo mode instead of throwing', async () => {
+  it('GET on 401 enters demo mode after two failures instead of throwing', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
@@ -185,6 +185,70 @@ describe('UnauthorizedError on 401', () => {
     }))
     const { api, isDemoMode } = await import('./api')
     await expect(api.topics.list()).resolves.toBeDefined()
+    await expect(api.topics.list()).resolves.toBeDefined()
     expect(isDemoMode()).toBe(true)
+  })
+})
+
+describe('SYN-008 — demo mode consecutive-failure debounce', () => {
+  it('becomes true after two consecutive GET failures', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('network fail')))
+    const { api, isDemoMode } = await import('./api')
+    await api.topics.list()
+    await api.topics.list()
+    expect(isDemoMode()).toBe(true)
+  })
+
+  it('resets to false after a successful GET following two failures', async () => {
+    let calls = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+      calls++
+      if (calls <= 2) return Promise.reject(new Error('fail'))
+      return Promise.resolve({ ok: true, json: () => Promise.resolve([]), text: () => Promise.resolve('[]') })
+    }))
+    const { api, isDemoMode } = await import('./api')
+    await api.topics.list()
+    await api.topics.list()
+    expect(isDemoMode()).toBe(true)
+    await api.topics.list()
+    expect(isDemoMode()).toBe(false)
+  })
+})
+
+describe('SYN-001/002/003 — approve/reject affected-count validation', () => {
+  it('approve throws when server reports affected=0 and ids were provided', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ approved: ['c1'], affected: 0 })),
+    }))
+    const { api } = await import('./api')
+    await expect(api.candidates.approve(['c1'])).rejects.toThrow('No records updated')
+  })
+
+  it('approve resolves normally when affected > 0', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ approved: ['some-uuid'], affected: 1 })),
+    }))
+    const { api } = await import('./api')
+    await expect(api.candidates.approve(['some-uuid'])).resolves.toMatchObject({ affected: 1 })
+  })
+
+  it('reject throws when server reports affected=0 and ids were provided', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ rejected: ['c2'], affected: 0 })),
+    }))
+    const { api } = await import('./api')
+    await expect(api.candidates.reject(['c2'])).rejects.toThrow('No records updated')
+  })
+
+  it('approve with empty ids list does not throw even if affected=0', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      text: () => Promise.resolve(JSON.stringify({ approved: [], affected: 0 })),
+    }))
+    const { api } = await import('./api')
+    await expect(api.candidates.approve([])).resolves.toBeDefined()
   })
 })
