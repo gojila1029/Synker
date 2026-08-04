@@ -1,6 +1,8 @@
-import logging
+﻿import logging
 import os
+import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 import sentry_sdk
 from fastapi import FastAPI, Request
@@ -28,9 +30,21 @@ from app.api.routes import (
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+    format="%(asctime)s %(levelname)s %(name)s [%(request_id)s] %(message)s",
 )
 _log = logging.getLogger("synker")
+
+_request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
+
+
+class _RequestIdFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = _request_id_var.get("-")  # type: ignore[attr-defined]
+        return True
+
+
+for _h in logging.root.handlers:
+    _h.addFilter(_RequestIdFilter())
 
 _sentry_dsn = os.getenv("SENTRY_DSN")
 if _sentry_dsn:
@@ -57,8 +71,20 @@ app.add_middleware(
     allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
 )
+
+
+@app.middleware("http")
+async def correlation_id_middleware(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
+    token = _request_id_var.set(req_id)
+    try:
+        response = await call_next(request)
+    finally:
+        _request_id_var.reset(token)
+    response.headers["X-Request-ID"] = req_id
+    return response
 
 
 @app.exception_handler(Exception)
