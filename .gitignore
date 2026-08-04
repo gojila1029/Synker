@@ -1,0 +1,53 @@
+﻿# ── Credentials & secrets ────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
+credentials/
+
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ── Node / frontend ──────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.next/
+.nuxt/
+*.tsbuildinfo
+
+# ── OS artefacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── IDE / editor ─────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Graphify output ──────────────────────────────────────────────────────────
+graphify-out/
+
+# ── Archives ─────────────────────────────────────────────────────────────────
+*.zip
+*.tar.gz
+
+# ── Claude local context ─────────────────────────────────────────────────────
+.claude/
+

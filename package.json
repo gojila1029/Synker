@@ -1,0 +1,12 @@
+{
+  "name": "synker",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently -k -n API,WEB -c cyan,blue \"npm run dev:api\" \"npm run dev:web\"",
+    "dev:api": "cd backend && uv run uvicorn app.main:app --reload --port 8000",
+    "dev:web": "pnpm --prefix \"AI Knowledge Curation Platform\" dev"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

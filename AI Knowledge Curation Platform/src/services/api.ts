@@ -1,0 +1,122 @@
+import type { DashboardStats, ActivityEvent, Topic, Source, Candidate, Job, Note, VaultNode, VaultFile, Settings } from "../types";
+import {
+  seedStats, seedActivity, seedTopics, seedSources, seedCandidates,
+  seedJobs, seedNotes, seedVaultTree, seedVaultFile, seedSettings,
+} from "../data/seed";
+import { supabase } from "@/lib/supabase";
+
+const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
+
+let _isDemo = false;
+export const isDemoMode = () => _isDemo;
+
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
+async function GET<T>(path: string, fallback: T): Promise<T> {
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      headers: await getAuthHeaders(),
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    _isDemo = false;
+    return res.json() as Promise<T>;
+  } catch {
+    _isDemo = true;
+    return fallback;
+  }
+}
+
+async function POST<T = void>(path: string, body?: unknown): Promise<T> {
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...await getAuthHeaders() },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  } catch (e) {
+    if (_isDemo) throw new Error("Backend unavailable — this action was not saved.");
+    throw e;
+  }
+}
+
+async function PATCH<T = void>(path: string, body: unknown): Promise<T> {
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json", ...await getAuthHeaders() },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+    const text = await res.text();
+    return (text ? JSON.parse(text) : undefined) as T;
+  } catch (e) {
+    if (_isDemo) throw new Error("Backend unavailable — this action was not saved.");
+    throw e;
+  }
+}
+
+async function DELETE_REQ(path: string): Promise<void> {
+  try {
+    const res = await fetch(`${BASE}${path}`, {
+      method: "DELETE",
+      headers: await getAuthHeaders(),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) throw new Error(`${res.status}`);
+  } catch (e) {
+    if (_isDemo) throw new Error("Backend unavailable — this action was not saved.");
+    throw e;
+  }
+}
+
+export const api = {
+  dashboard: {
+    getStats: () => GET<DashboardStats>("/api/dashboard/stats", seedStats),
+    getActivity: () => GET<ActivityEvent[]>("/api/dashboard/activity", seedActivity),
+  },
+  topics: {
+    list: () => GET<Topic[]>("/api/topics", seedTopics),
+    create: (label: string) => POST<Topic>("/api/topics", { label }),
+    delete: (id: string) => DELETE_REQ(`/api/topics/${id}`),
+  },
+  sources: {
+    list: () => GET<Source[]>("/api/sources", seedSources),
+    add: (payload: Partial<Source>) => POST<Source>("/api/sources", payload),
+    delete: (id: string) => DELETE_REQ(`/api/sources/${id}`),
+  },
+  candidates: {
+    list: () => GET<Candidate[]>("/api/candidates", seedCandidates),
+    approve: (ids: string[]) => POST("/api/candidates/approve", { ids }),
+    reject: (ids: string[]) => POST("/api/candidates/reject", { ids }),
+  },
+  jobs: {
+    list: () => GET<Job[]>("/api/jobs", seedJobs),
+    retry: (id: string) => POST(`/api/jobs/${id}/retry`),
+  },
+  notes: {
+    list: () => GET<Note[]>("/api/notes", seedNotes),
+    approve: (id: string) => POST(`/api/notes/${id}/approve`),
+    reject: (id: string) => POST(`/api/notes/${id}/reject`),
+  },
+  vault: {
+    tree: () => GET<VaultNode[]>("/api/vault/tree", seedVaultTree),
+    file: (path: string) => GET<VaultFile>(`/api/vault/file?path=${encodeURIComponent(path)}`, seedVaultFile),
+  },
+  settings: {
+    get: () => GET<Settings>("/api/settings", seedSettings),
+    update: (section: string, payload: unknown) => PATCH(`/api/settings/${section}`, payload),
+  },
+  scheduler: {
+    trigger: () => POST("/api/scheduler/trigger"),
+  },
+};
