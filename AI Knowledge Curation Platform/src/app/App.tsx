@@ -1,4 +1,4 @@
-﻿import { useState, useEffect } from "react";
+﻿import { useState, useEffect, useRef } from "react";
 import { toast, Toaster } from "sonner";
 import { useAuth } from "../hooks/useAuth";
 import { LoginPage } from "./LoginPage";
@@ -106,7 +106,7 @@ function sourceTypeIcon(type: Source["type"]) {
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "done" || status === "completed") return <Badge variant="success"><CheckCircle2 className="size-3" />Done</Badge>;
+  if (status === "done" || status === "completed") return <Badge variant="success"><CheckCircle2 className="size-3" />Completed</Badge>;
   if (status === "running" || status === "processing") return <Badge variant="teal"><Activity className="size-3" />Running</Badge>;
   if (status === "queued") return <Badge variant="neutral"><Clock className="size-3" />Queued</Badge>;
   if (status === "failed") return <Badge variant="danger"><XCircle className="size-3" />Failed</Badge>;
@@ -282,7 +282,7 @@ function DashboardScreen() {
         <Card className="p-5 border-red-200 bg-red-50/30">
           <div className="flex items-center gap-2 mb-4">
             <AlertTriangle className="size-4 text-red-500" />
-            <h2 className="text-sm font-semibold text-slate-800">{failedJobs.length} job{failedJobs.length > 1 ? "s" : ""} need attention</h2>
+            <h2 className="text-sm font-semibold text-slate-800">{failedJobs.length} job{failedJobs.length !== 1 ? "s" : ""} need{failedJobs.length === 1 ? "s" : ""} attention</h2>
           </div>
           <div className="space-y-2.5">
             {failedJobs.map((j) => (
@@ -424,7 +424,7 @@ function SourcesScreen() {
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusBadge status={s.status} />
-                    <button onClick={() => api.sources.delete(s.id).then(() => { toast.success("Removed"); refetch(); })}
+                    <button onClick={() => api.sources.delete(s.id).then(() => { toast.success("Removed"); refetch(); }).catch((e: unknown) => toast.error(`Remove failed: ${e instanceof Error ? e.message : "Request failed"}`))}
                       className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500">
                       <Trash2 className="size-3.5" />
                     </button>
@@ -515,6 +515,12 @@ function CandidateApprovalScreen() {
     return groups;
   }
 
+  const [demo, setDemo] = useState(isDemoMode);
+  useEffect(() => {
+    const id = setInterval(() => setDemo(isDemoMode()), 2000);
+    return () => clearInterval(id);
+  }, []);
+
   const [acting, setActing] = useState<"approve" | "reject" | null>(null);
   async function handleBulkApprove() {
     if (acting || selected.size === 0) return;
@@ -545,10 +551,10 @@ function CandidateApprovalScreen() {
             <Button size="sm" variant="secondary" onClick={() => selected.size === pending.length ? setSelected(new Set()) : setSelected(new Set(pending.map((c) => c.id)))}>
               {selected.size === pending.length ? "Deselect All" : "Select All"}
             </Button>
-            <Button size="sm" variant="success" onClick={handleBulkApprove} disabled={selected.size === 0 || acting !== null}>
+            <Button size="sm" variant="success" onClick={handleBulkApprove} disabled={selected.size === 0 || acting !== null || demo} title={demo ? "Backend offline" : undefined}>
               <CheckCircle2 className="size-3.5" /> {acting === "approve" ? "Approving…" : `Approve${selected.size > 0 ? ` (${selected.size})` : ""}`}
             </Button>
-            <Button size="sm" variant="danger" onClick={handleBulkReject} disabled={selected.size === 0 || acting !== null}>
+            <Button size="sm" variant="danger" onClick={handleBulkReject} disabled={selected.size === 0 || acting !== null || demo} title={demo ? "Backend offline" : undefined}>
               <XCircle className="size-3.5" /> {acting === "reject" ? "Rejecting…" : `Reject${selected.size > 0 ? ` (${selected.size})` : ""}`}
             </Button>
           </div>
@@ -645,6 +651,8 @@ function ProcessingJobsScreen() {
   const [filter, setFilter] = useState<"all" | Job["status"]>("all");
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
 
+  const [refreshing, setRefreshing] = useState(false);
+
   const hasRunning = (jobs ?? []).some((j) => j.status === "running");
   useEffect(() => {
     if (!hasRunning) return;
@@ -652,12 +660,14 @@ function ProcessingJobsScreen() {
     return () => clearInterval(t);
   }, [hasRunning, refetch]);
 
-  const filtered = (jobs ?? []).filter((j) => filter === "all" || j.status === filter);
+  const filtered = (jobs ?? []).filter((j) =>
+    filter === "all" || j.status === filter || (filter === "completed" && j.status === "done")
+  );
   const tabs: { key: "all" | Job["status"]; label: string; count?: number }[] = [
     { key: "all", label: "All", count: (jobs ?? []).length },
     { key: "running", label: "Running", count: (jobs ?? []).filter((j) => j.status === "running").length },
     { key: "queued", label: "Queued", count: (jobs ?? []).filter((j) => j.status === "queued").length },
-    { key: "completed", label: "Completed", count: (jobs ?? []).filter((j) => j.status === "completed").length },
+    { key: "completed", label: "Completed", count: (jobs ?? []).filter((j) => j.status === "completed" || j.status === "done").length },
     { key: "failed", label: "Failed", count: (jobs ?? []).filter((j) => j.status === "failed").length },
   ];
 
@@ -667,8 +677,8 @@ function ProcessingJobsScreen() {
         title="Processing Jobs"
         description="Track extraction, transcription, and note generation tasks"
         action={
-          <Button onClick={() => refetch()} variant="secondary" size="sm">
-            <RefreshCw className="size-3.5" /> Refresh
+          <Button onClick={async () => { setRefreshing(true); try { await refetch(); } finally { setRefreshing(false); } }} variant="secondary" size="sm" disabled={refreshing}>
+            <RefreshCw className={`size-3.5${refreshing ? " animate-spin" : ""}`} /> {refreshing ? "Refreshing…" : "Refresh"}
           </Button>
         }
       />
@@ -920,12 +930,19 @@ function VaultBrowserScreen() {
   const [fileData, setFileData] = useState<VaultFile | null>(seedVaultFile);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["Indian Insurance", "Claude AI", "Backend Dev"]));
   const [search, setSearch] = useState("");
+  const abortRef = useRef<AbortController | null>(null);
 
   async function handleSelectFile(path: string) {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setSelectedPath(path);
-    setFileData(null);
-    try { const data = await api.vault.file(path); setFileData(data); }
-    catch { toast.error("Could not load file"); }
+    try {
+      const data = await api.vault.file(path);
+      if (!controller.signal.aborted) setFileData(data);
+    } catch {
+      if (!controller.signal.aborted) toast.error("Could not load file");
+    }
   }
 
   function toggleFolder(path: string) {
