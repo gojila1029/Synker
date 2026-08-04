@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+﻿import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 // vi.hoisted ensures this ref is available before the vi.mock factory runs
 const { mockGetSession } = vi.hoisted(() => ({
@@ -54,28 +54,48 @@ describe('BASE URL', () => {
     const calledUrl = fetchMock.mock.calls[0]?.[0] as string
     expect(calledUrl).toContain('http://custom-api:9000')
   })
+
+  it('is exported and matches VITE_API_BASE', async () => {
+    vi.stubEnv('VITE_API_BASE', 'https://my-backend.example.com')
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, text: () => Promise.resolve('') }))
+    const { BASE } = await import('./api')
+    expect(BASE).toBe('https://my-backend.example.com')
+  })
 })
 
-describe('mutating actions in demo mode', () => {
-  it('POST throws instead of silently returning undefined', async () => {
+describe('mutating actions always attempt the request', () => {
+  it('POST throws the real network error (not a demo-mode guard)', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
     const { api } = await import('./api')
-    await api.topics.list() // triggers demo mode
-    await expect(api.topics.create('test')).rejects.toThrow('Backend unavailable')
+    await api.topics.list() // puts the module into demo mode
+    await expect(api.topics.create('test')).rejects.toThrow('Network error')
   })
 
-  it('PATCH throws instead of silently returning undefined', async () => {
+  it('PATCH throws the real network error regardless of demo mode', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
     const { api } = await import('./api')
-    await api.topics.list() // triggers demo mode
-    await expect(api.settings.update('vault', {})).rejects.toThrow('Backend unavailable')
+    await api.topics.list() // puts the module into demo mode
+    await expect(api.settings.update('vault', {})).rejects.toThrow('Network error')
   })
 
-  it('DELETE throws instead of silently returning void', async () => {
+  it('DELETE throws the real network error regardless of demo mode', async () => {
     vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
     const { api } = await import('./api')
-    await api.topics.list() // triggers demo mode
-    await expect(api.topics.delete('some-id')).rejects.toThrow('Backend unavailable')
+    await api.topics.list() // puts the module into demo mode
+    await expect(api.topics.delete('some-id')).rejects.toThrow('Network error')
+  })
+
+  it('POST succeeds even when a prior GET failed (backend warmed up)', async () => {
+    let callCount = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+      callCount++
+      if (callCount === 1) return Promise.reject(new Error('Network error')) // first GET fails
+      return Promise.resolve({ ok: true, text: () => Promise.resolve(JSON.stringify({ id: '1', label: 'test' })) })
+    }))
+    const { api } = await import('./api')
+    await api.topics.list() // GET fails, sets _isDemo = true
+    const result = await api.topics.create('test') // POST should succeed
+    expect(result).toMatchObject({ id: '1', label: 'test' })
   })
 })
 

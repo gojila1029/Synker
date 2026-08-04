@@ -55,6 +55,18 @@ Never close an item without a resolution summary. Never leave Status as `in-prog
 
 ---
 
+
+## P3 — Frontend bugs from video testing (fix before next user test)
+
+| # | Area | Item | Files affected | Status | Notes |
+|---|------|------|----------------|--------|-------|
+| P3-1 | Frontend / API client | **`_isDemo` flag gates mutations after cold-start GET timeout.** If any GET times out on page load (e.g. Railway cold start), `_isDemo = true` and all subsequent mutations throw "Backend unavailable" even if the backend is now reachable. Mutations must attempt the request regardless of `_isDemo` and only report the actual HTTP/network error. | `src/services/api.ts` | done | 2026-08-05 — POST/PATCH/DELETE bypass _isDemo entirely; always attempt the real request; reset _isDemo=false on success; GET timeout raised to 10s; 4 new tests added, all 10 pass |
+| P3-2 | Frontend / UX | **No loading state on mutation buttons.** Rapid double-click on Approve, Reject, Accept & Save, Add Source, and Run Discovery Now triggers duplicate API calls and stacked toasts. Buttons must be disabled during in-flight requests. | `src/app/App.tsx` | done | 2026-08-05 — per-handler acting/triggering/adding/noteActing/retryingIds states cover all mutation buttons; Dashboard and Jobs Retry use per-row Set<string> guard |
+| P3-3 | Frontend / UX | **Generic error messages.** "Approval failed", "Failed", "Failed to trigger run" give no actionable context. Errors should include the HTTP status or network reason. | `src/app/App.tsx` | done | 2026-08-05 — all catch blocks use `e instanceof Error ? e.message : "Request failed"` including both Retry buttons; HTTP status propagated from api.ts error messages |
+| P3-4 | Frontend / UX | **Jobs Refresh shows blank flash.** `refetch()` sets `loading=true` in useApi, replacing the table with a skeleton for 1-3 seconds. Existing data should remain visible during background refresh. | `src/hooks/useApi.ts`, `src/app/App.tsx` | done | 2026-08-05 — hasData.current ref in useApi; loading=true only on first fetch; background refetches update data silently with no blank flash |
+| P3-5 | Frontend / UX | **Status indicator hardcodes "localhost:8000".** The "Connected" chip always shows localhost:8000 regardless of VITE_API_BASE. | `src/app/App.tsx`, `src/services/api.ts` | done | 2026-08-05 — BASE exported from api.ts; sidebar Connected chip displays actual backend host via BASE.replace(protocol).split("/")[0] |
+
+---
 ## Completed actions
 
 | # | Item | Completed | Resolution |
@@ -68,6 +80,7 @@ Never close an item without a resolution summary. Never leave Status as `in-prog
 | C-7 | Frontend auth gate | 2026-08-03 | `useAuth.ts` + `LoginPage.tsx` + auth gate in `App.tsx`; Supabase session management with `onAuthStateChange` |
 | C-8 | Railway deployment config | 2026-08-03 | `railway.toml`: health check at `/health`, 30-second timeout, restart-on-failure policy |
 | C-9 | `.env.example` sanitized | 2026-08-03 | Real credentials removed; placeholder values only in committed example file |
+
 
 
 

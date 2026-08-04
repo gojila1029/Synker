@@ -10,7 +10,7 @@ import {
   GitMerge, SkipForward, Wifi, WifiOff, RotateCcw, Activity,
 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
-import { api, isDemoMode } from "../services/api";
+import { api, isDemoMode, BASE } from "../services/api";
 import type { Topic, Source, Candidate, Job, Note, VaultNode, VaultFile } from "../types";
 import {
   seedStats, seedActivity, seedTopics, seedSources, seedCandidates,
@@ -155,9 +155,14 @@ function DashboardScreen() {
   const failedJobs = (jobs ?? []).filter((j) => j.status === "failed");
   const pending = (candidates ?? []).filter((c) => c.status === "pending").slice(0, 3);
 
+  const [triggering, setTriggering] = useState(false);
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
   async function handleTrigger() {
+    if (triggering) return;
+    setTriggering(true);
     try { await api.scheduler.trigger(); toast.success("Discovery run triggered"); refetchStats(); }
-    catch { toast.error("Failed to trigger run"); }
+    catch (e) { toast.error(`Failed to trigger run: ${e instanceof Error ? e.message : "Request failed"}`); }
+    finally { setTriggering(false); }
   }
 
   const kpis = [
@@ -184,8 +189,8 @@ function DashboardScreen() {
           <h1 className="text-2xl font-bold text-slate-900">Good morning 👋</h1>
           <p className="text-sm text-slate-500 mt-0.5">Last sync ran 2 minutes ago · Next in 8 minutes</p>
         </div>
-        <Button onClick={handleTrigger} variant="primary">
-          <Play className="size-4" /> Run Discovery Now
+        <Button onClick={handleTrigger} variant="primary" disabled={triggering}>
+          <Play className="size-4" />{triggering ? "Running…" : "Run Discovery Now"}
         </Button>
       </div>
 
@@ -287,8 +292,13 @@ function DashboardScreen() {
                   <p className="text-xs font-mono text-slate-400 mt-0.5">{j.id}</p>
                   {j.error && <p className="text-xs text-red-600 mt-1 line-clamp-1">{j.error}</p>}
                 </div>
-                <Button size="sm" variant="secondary" onClick={() => api.jobs.retry(j.id).then(() => toast.success("Retrying…"))}>
-                  <RotateCcw className="size-3" /> Retry
+                <Button size="sm" variant="secondary" disabled={retryingIds.has(j.id)} onClick={async () => {
+                  setRetryingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
+                  try { await api.jobs.retry(j.id); toast.success("Retrying…"); refetchStats(); }
+                  catch (e) { toast.error(`Retry failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+                  finally { setRetryingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
+                }}>
+                  <RotateCcw className="size-3" /> {retryingIds.has(j.id) ? "Retrying…" : "Retry"}
                 </Button>
               </div>
             ))}
@@ -317,13 +327,16 @@ function SourcesScreen() {
     { key: "web", label: "Web" }, { key: "pdf", label: "PDF" }, { key: "local", label: "Local Folder" },
   ];
 
+  const [adding, setAdding] = useState(false);
   async function handleAddSource() {
-    if (!newUrl) return;
+    if (!newUrl || adding) return;
+    setAdding(true);
     try {
       await api.sources.add({ url: newUrl, type: newType, topicId: newTopic || null });
       toast.success("Source added successfully");
       setShowModal(false); setNewUrl(""); refetch();
-    } catch { toast.error("Failed to add source"); }
+    } catch (e) { toast.error(`Failed to add source: ${e instanceof Error ? e.message : "Request failed"}`); }
+    finally { setAdding(false); }
   }
 
   async function handleAddTopic() {
@@ -466,7 +479,7 @@ function SourcesScreen() {
               </div>
               <div className="flex gap-2 pt-1">
                 <Button onClick={() => setShowModal(false)} variant="secondary" className="flex-1 justify-center">Cancel</Button>
-                <Button onClick={handleAddSource} variant="primary" className="flex-1 justify-center">Add Source</Button>
+                <Button onClick={handleAddSource} variant="primary" className="flex-1 justify-center" disabled={adding}>{adding ? "Adding…" : "Add Source"}</Button>
               </div>
             </div>
           </div>
@@ -498,16 +511,21 @@ function CandidateApprovalScreen() {
     return groups;
   }
 
+  const [acting, setActing] = useState<"approve" | "reject" | null>(null);
   async function handleBulkApprove() {
-    if (selected.size === 0) return;
+    if (acting || selected.size === 0) return;
+    setActing("approve");
     try { await api.candidates.approve(Array.from(selected)); toast.success(`${selected.size} candidate(s) approved`); setSelected(new Set()); refetch(); }
-    catch { toast.error("Approval failed"); }
+    catch (e) { toast.error(`Approval failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+    finally { setActing(null); }
   }
 
   async function handleBulkReject() {
-    if (selected.size === 0) return;
+    if (acting || selected.size === 0) return;
+    setActing("reject");
     try { await api.candidates.reject(Array.from(selected)); toast.success(`${selected.size} candidate(s) rejected`); setSelected(new Set()); refetch(); }
-    catch { toast.error("Rejection failed"); }
+    catch (e) { toast.error(`Rejection failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+    finally { setActing(null); }
   }
 
   const groups = groupByTopic(pending);
@@ -523,11 +541,11 @@ function CandidateApprovalScreen() {
             <Button size="sm" variant="secondary" onClick={() => selected.size === pending.length ? setSelected(new Set()) : setSelected(new Set(pending.map((c) => c.id)))}>
               {selected.size === pending.length ? "Deselect All" : "Select All"}
             </Button>
-            <Button size="sm" variant="success" onClick={handleBulkApprove} disabled={selected.size === 0}>
-              <CheckCircle2 className="size-3.5" /> Approve {selected.size > 0 ? `(${selected.size})` : ""}
+            <Button size="sm" variant="success" onClick={handleBulkApprove} disabled={selected.size === 0 || acting !== null}>
+              <CheckCircle2 className="size-3.5" /> {acting === "approve" ? "Approving…" : `Approve${selected.size > 0 ? ` (${selected.size})` : ""}`}
             </Button>
-            <Button size="sm" variant="danger" onClick={handleBulkReject} disabled={selected.size === 0}>
-              <XCircle className="size-3.5" /> Reject {selected.size > 0 ? `(${selected.size})` : ""}
+            <Button size="sm" variant="danger" onClick={handleBulkReject} disabled={selected.size === 0 || acting !== null}>
+              <XCircle className="size-3.5" /> {acting === "reject" ? "Rejecting…" : `Reject${selected.size > 0 ? ` (${selected.size})` : ""}`}
             </Button>
           </div>
         }
@@ -621,6 +639,7 @@ function CandidateApprovalScreen() {
 function ProcessingJobsScreen() {
   const { data: jobs, loading, refetch } = useApi(api.jobs.list, seedJobs);
   const [filter, setFilter] = useState<"all" | Job["status"]>("all");
+  const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
 
   const hasRunning = (jobs ?? []).some((j) => j.status === "running");
   useEffect(() => {
@@ -705,8 +724,13 @@ function ProcessingJobsScreen() {
                           /cuda out of memory|oom|out of memory/i.test(j.error ?? "") ? (
                             <span className="text-xs text-amber-600 font-medium">Adjust model / device</span>
                           ) : (
-                            <Button size="sm" variant="secondary" onClick={async () => { try { await api.jobs.retry(j.id); toast.success("Retrying"); refetch(); } catch { toast.error("Retry failed"); } }}>
-                              <RotateCcw className="size-3" /> Retry
+                            <Button size="sm" variant="secondary" disabled={retryingIds.has(j.id)} onClick={async () => {
+                              setRetryingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
+                              try { await api.jobs.retry(j.id); toast.success("Retrying"); refetch(); }
+                              catch (e) { toast.error(`Retry failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+                              finally { setRetryingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
+                            }}>
+                              <RotateCcw className="size-3" /> {retryingIds.has(j.id) ? "Retrying…" : "Retry"}
                             </Button>
                           )
                         )}
@@ -733,11 +757,20 @@ function KnowledgeReviewScreen() {
 
   useEffect(() => { if (notes && notes.length > 0 && !selected) setSelected(notes[0]); }, [notes]);
 
+  const [noteActing, setNoteActing] = useState<"approve" | "reject" | null>(null);
   async function handleApprove(id: string) {
-    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); refetch(); } catch { toast.error("Failed"); }
+    if (noteActing) return;
+    setNoteActing("approve");
+    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); refetch(); }
+    catch (e) { toast.error(`Failed to save note: ${e instanceof Error ? e.message : "Request failed"}`); }
+    finally { setNoteActing(null); }
   }
   async function handleReject(id: string) {
-    try { await api.notes.reject(id); toast.success("Note rejected"); refetch(); } catch { toast.error("Failed"); }
+    if (noteActing) return;
+    setNoteActing("reject");
+    try { await api.notes.reject(id); toast.success("Note rejected"); refetch(); }
+    catch (e) { toast.error(`Failed to reject note: ${e instanceof Error ? e.message : "Request failed"}`); }
+    finally { setNoteActing(null); }
   }
 
   return (
@@ -782,11 +815,11 @@ function KnowledgeReviewScreen() {
                 <p className="text-sm text-slate-500 mt-1">{selected.source}</p>
               </div>
               <div className="flex gap-2 shrink-0">
-                <Button onClick={() => handleReject(selected.id)} variant="danger">
-                  <XCircle className="size-4" /> Reject
+                <Button onClick={() => handleReject(selected.id)} variant="danger" disabled={noteActing !== null}>
+                  <XCircle className="size-4" /> {noteActing === "reject" ? "Rejecting…" : "Reject"}
                 </Button>
-                <Button onClick={() => handleApprove(selected.id)} variant="primary">
-                  <CheckCircle2 className="size-4" /> Accept & Save
+                <Button onClick={() => handleApprove(selected.id)} variant="primary" disabled={noteActing !== null}>
+                  <CheckCircle2 className="size-4" /> {noteActing === "approve" ? "Saving…" : "Accept & Save"}
                 </Button>
               </div>
             </div>
@@ -1294,7 +1327,7 @@ export default function App() {
               <Wifi className="size-3.5 shrink-0" />
               <div>
                 <p className="font-medium">Connected</p>
-                <p className="text-emerald-500/70">localhost:8000</p>
+                <p className="text-emerald-500/70 truncate max-w-[120px]">{BASE.replace(/^https?:\/\//, "").split("/")[0]}</p>
               </div>
             </div>
           )}
@@ -1320,5 +1353,10 @@ export default function App() {
     </div>
   );
 }
+
+
+
+
+
 
 
