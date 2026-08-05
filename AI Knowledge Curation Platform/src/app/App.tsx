@@ -1175,7 +1175,7 @@ function SettingsScreen() {
           <label className={labelCls}>Vault path</label>
           <div className="flex gap-2">
             <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} />
-            <Button variant="secondary" size="md" disabled={picking} onClick={async () => {
+            <Button variant="secondary" size="md" disabled={picking || !BASE.includes("localhost")} title={!BASE.includes("localhost") ? "Browse only works when running locally — type the path manually" : undefined} onClick={async () => {
               setPicking(true);
               try {
                 const { path } = await api.settings.browseDirectory();
