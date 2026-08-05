@@ -22,8 +22,11 @@ async def get_stats(
     pending = await db.fetchval(
         "SELECT COUNT(*) FROM candidates WHERE user_id=$1 AND status='pending'", uid
     ) or 0
-    active_jobs = await db.fetchval(
-        "SELECT COUNT(*) FROM jobs WHERE user_id=$1 AND status IN ('running','queued')", uid
+    running_jobs = await db.fetchval(
+        "SELECT COUNT(*) FROM jobs WHERE user_id=$1 AND status='running'", uid
+    ) or 0
+    queued_jobs = await db.fetchval(
+        "SELECT COUNT(*) FROM jobs WHERE user_id=$1 AND status='queued'", uid
     ) or 0
     notes_today = await db.fetchval(
         "SELECT COUNT(*) FROM notes WHERE user_id=$1 AND generated_at >= CURRENT_DATE", uid
@@ -45,7 +48,8 @@ async def get_stats(
 
     return {
         "pendingApprovals": int(pending),
-        "activeJobs": int(active_jobs),
+        "runningJobs": int(running_jobs),
+        "queuedJobs": int(queued_jobs),
         "notesToday": int(notes_today),
         "sourcesIndexed": int(sources_indexed),
         "pipelineCounts": pipeline_counts,

@@ -1,9 +1,25 @@
-﻿from typing import Any
+﻿import base64
+import os
+from typing import Any
 
 import asyncpg
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, get_db
+
+
+def _encrypt_field(plaintext: str) -> str:
+    """AES-256-GCM encrypt a string. Returns base64(nonce + ciphertext).
+    Requires SETTINGS_ENCRYPTION_KEY env var with at least 32 characters.
+    Returns plaintext unchanged when key is absent or too short."""
+    raw_key = os.environ.get("SETTINGS_ENCRYPTION_KEY", "")
+    if len(raw_key) < 32 or not plaintext:
+        return plaintext
+    aesgcm = AESGCM(raw_key[:32].encode("utf-8"))
+    nonce = os.urandom(12)
+    ct = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
+    return base64.b64encode(nonce + ct).decode("utf-8")
 from app.schemas.settings import (
     AIProvidersSettingsRead,
     CleanupSettings,
@@ -83,18 +99,29 @@ async def update_settings(
             user_id,
             tier,
         )
+    elif section == "ai_providers":
+        data = dict(body)
+        for key_field in ("claudeKey", "openaiKey"):
+            val = data.get(key_field, "")
+            if val:
+                data[key_field] = _encrypt_field(val)
+        await db.execute(
+            """INSERT INTO user_settings (user_id, ai_providers)
+               VALUES ($1, $2)
+               ON CONFLICT (user_id) DO UPDATE
+               SET ai_providers = $2, updated_at = now()""",
+            user_id,
+            data,
+        )
     else:
-        col = section  # ai_providers | privacy | discovery | cleanup | notifications
-        # P2-3 WARNING: ai_providers JSONB stores claudeKey/openaiKey as plaintext.
-        # Do NOT allow real API keys to be stored until Supabase Vault or column-level
-        # encryption is implemented. See follow-up.md P2-3.
+        col = section  # privacy | discovery | cleanup | notifications
         await db.execute(
             f"""INSERT INTO user_settings (user_id, {col})
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET {col} = $2, updated_at = now()""",
             user_id,
-            body,  # asyncpg handles dict→jsonb
+            body,
         )
 
     return {"section": section, "updated": True}

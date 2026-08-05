@@ -6,15 +6,15 @@ export const seedStats: DashboardStats = {
   notesToday: 7,
   sourcesIndexed: 138,
   pipelineCounts: {
-    Discover: 22,
-    Analyze: 8,
-    Approve: 14,
-    Extract: 3,
-    Transcribe: 1,
-    Generate: 2,
-    Verify: 1,
-    Graphify: 0,
-    Cleanup: 0,
+    discover: 22,
+    analyze: 8,
+    approve: 14,
+    extract: 3,
+    transcribe: 1,
+    generate: 2,
+    verify: 1,
+    graphify: 0,
+    cleanup: 0,
   },
 };
 
@@ -187,7 +187,7 @@ export const seedVaultFile: VaultFile = {
 
 export const seedSettings: Settings = {
   vault: { path: "~/ObsidianVault/Synker", name: "Synker Vault" },
-  aiProviders: { claudeKey: "sk-ant-••••••••••••••••", openaiKey: "sk-••••••••••••••••", ollamaUrl: "http://localhost:11434", fallbackOrder: ["claude", "openai"] },
+  aiProviders: { claudeKeySet: false, openaiKeySet: false, ollamaUrl: "http://localhost:11434", fallbackOrder: ["claude", "openai"] },
   privacy: { piiMode: "regex", blockInsuranceData: true, cloudBlockList: ["client names", "policy numbers", "aadhaar", "PAN"] },
   discovery: { defaultInterval: 10, youtubeInterval: 60, webInterval: 10, pdfInterval: 30, localDebounce: 30 },
   cleanup: { youtube: "zip", web: "keep", pdf: "keep", local: "keep" },

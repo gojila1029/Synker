@@ -74,6 +74,29 @@ Never close an item without a resolution summary. Never leave Status as `in-prog
 | P4-1 | Backend / Security | **HS256 → ES256 JWT verification.** Supabase now signs tokens with ES256 (asymmetric ECDSA P-256). Backend `security.py` still calls `jwt.decode(..., algorithms=["HS256"])` which fails every request with 401. Must switch to `PyJWKClient` + JWKS key lookup + `algorithms=["ES256"]`. | `backend/app/core/security.py`, `backend/pyproject.toml` | done | 2026-08-04 — replaced HS256 shared-secret decode with PyJWKClient + algorithms=["ES256"]; PyJWT[cryptography] extra added to pyproject.toml; JWKS fetched lazily and cached per kid |
 
 ---
+## SYN-019–029 video-report fix batch (2026-08-05)
+
+| Fix | Area | Status | Notes |
+|-----|------|--------|-------|
+| F1.1 | Job.status "done" | done | types/index.ts + backend/app/schemas/jobs.py |
+| F1.2 | AIProvidersRead/Write interfaces | done | types/index.ts; seedSettings uses keySet flags |
+| F1.3 | Pipeline stage names lowercased | done | seed.ts pipelineCounts; App.tsx pipeline array + labels |
+| F2.1 | 401 re-thrown past demo fallback | done | api.ts GET — UnauthorizedError propagates |
+| F3.1 | Settings form reset protection | done | hasLoaded ref — hydrates on first settings load only |
+| F3.2 | Vault picker path fix | done | showDirectoryPicker no longer sets path; shows info toast |
+| F3.3 | Browse button picking state | done | picking state + disabled + "Picking…" label |
+| F3.4 | AI key inputs use keySet flag | done | claudeKey/openaiKey local state; placeholder from claudeKeySet/openaiKeySet |
+| F3.5 | Key format validation | done | saveAiProviders validates sk-ant- / sk- prefix before save |
+| F3.6 | VaultBrowserScreen null init | done | selectedPath=null, fileData=null |
+| F3.7 | Dashboard seed fallbacks removed | done | api.ts getStats/getActivity → null; DashboardScreen drops seed args |
+| F3.8 | Relative activity timestamps | done | relativeTime() + 60s setInterval tick in DashboardScreen |
+| F3.9 | Job timestamp locale format | done | formatDateTime() on j.startedAt |
+| B4.1 | similar_to in notes SELECT | done | notes.py — similarTo field in SQL + response dict |
+| B4.2 | Pydantic input models | done | SourceCreate in sources route; BulkIds in candidates routes |
+| B4.3 | AES-256-GCM key encryption | done | settings_route.py _encrypt_field(); SETTINGS_ENCRYPTION_KEY env var |
+| B4.4 | Split activeJobs + Cancel | done | dashboard.py runningJobs/queuedJobs; jobs.py /cancel; types + api.ts + App.tsx |
+
+---
 ## Completed actions
 
 | # | Item | Completed | Resolution |

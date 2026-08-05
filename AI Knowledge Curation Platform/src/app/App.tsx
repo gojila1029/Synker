@@ -143,17 +143,41 @@ function renderMarkdown(md: string): string {
     .replace(/^(?!<[hlpli])(.+)$/gm, '<p class="mb-3 text-slate-600 text-sm leading-relaxed">$1</p>');
 }
 
+function relativeTime(ts: string): string {
+  const diff = Math.floor((Date.now() - new Date(ts).getTime()) / 1000);
+  if (isNaN(diff) || diff < 0) return ts;
+  if (diff < 60) return "just now";
+  if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+  return `${Math.floor(diff / 86400)}d ago`;
+}
+
+function formatDateTime(ts: string): string {
+  try {
+    return new Date(ts).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
+  } catch {
+    return ts;
+  }
+}
+
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
 function DashboardScreen() {
-  const { data: stats, loading: statsLoading, refetch: refetchStats } = useApi(api.dashboard.getStats, seedStats);
-  const { data: activity, loading: actLoading } = useApi(api.dashboard.getActivity, seedActivity);
-  const { data: candidates } = useApi(api.candidates.list, seedCandidates);
-  const { data: jobs } = useApi(api.jobs.list, seedJobs);
+  const { data: stats, loading: statsLoading, refetch: refetchStats } = useApi(api.dashboard.getStats);
+  const { data: activity, loading: actLoading } = useApi(api.dashboard.getActivity);
+  const { data: candidates } = useApi(api.candidates.list);
+  const { data: jobs } = useApi(api.jobs.list);
 
-  const pipeline = ["Discover", "Analyze", "Approve", "Extract", "Transcribe", "Generate", "Verify", "Graphify", "Cleanup"];
+  const pipeline = ["discover", "analyze", "approve", "extract", "transcribe", "generate", "verify", "graphify", "cleanup"];
+  const pipelineLabels: Record<string, string> = { discover: "Discover", analyze: "Analyze", approve: "Approve", extract: "Extract", transcribe: "Transcribe", generate: "Generate", verify: "Verify", graphify: "Graphify", cleanup: "Cleanup" };
   const failedJobs = (jobs ?? []).filter((j) => j.status === "failed");
   const pending = (candidates ?? []).filter((c) => c.status === "pending").slice(0, 3);
+
+  const [, setNowTick] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setNowTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
 
   const [triggering, setTriggering] = useState(false);
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
@@ -167,7 +191,7 @@ function DashboardScreen() {
 
   const kpis = [
     { label: "Pending Approvals", value: stats?.pendingApprovals ?? 0, sub: "Waiting for your review", icon: <CheckSquare className="size-5 text-amber-500" />, bg: "bg-amber-50" },
-    { label: "Active Jobs", value: stats?.activeJobs ?? 0, sub: "Processing now", icon: <Cpu className="size-5 text-teal-500" />, bg: "bg-teal-50" },
+    { label: "Active Jobs", value: (stats?.runningJobs ?? 0) + (stats?.queuedJobs ?? 0), sub: `${stats?.runningJobs ?? 0} running · ${stats?.queuedJobs ?? 0} queued`, icon: <Cpu className="size-5 text-teal-500" />, bg: "bg-teal-50" },
     { label: "Notes Published Today", value: stats?.notesToday ?? 0, sub: "Added to your vault", icon: <FileText className="size-5 text-blue-500" />, bg: "bg-blue-50" },
     { label: "Sources Indexed", value: stats?.sourcesIndexed ?? 0, sub: "Tracked sources", icon: <Globe className="size-5 text-slate-500" />, bg: "bg-slate-100" },
   ];
@@ -224,7 +248,7 @@ function DashboardScreen() {
               <div key={stage} className="flex items-center shrink-0">
                 <div className={`flex flex-col items-center px-3 py-2.5 rounded-xl min-w-[76px] transition-colors ${count > 0 ? "bg-blue-50 ring-1 ring-blue-200" : "bg-slate-50"}`}>
                   <span className={`text-xl font-bold ${count > 0 ? "text-blue-600" : "text-slate-300"}`}>{count}</span>
-                  <span className="text-xs text-slate-500 mt-0.5 whitespace-nowrap">{stage}</span>
+                  <span className="text-xs text-slate-500 mt-0.5 whitespace-nowrap">{pipelineLabels[stage]}</span>
                 </div>
                 {i < pipeline.length - 1 && <ArrowRight className="size-3.5 text-slate-300 shrink-0 mx-1.5" />}
               </div>
@@ -245,7 +269,7 @@ function DashboardScreen() {
                   {actIcons[ev.type] ?? <div className="size-6 rounded-full bg-slate-100 flex items-center justify-center shrink-0"><Clock className="size-3.5 text-slate-400" /></div>}
                   <div className="min-w-0 pt-0.5">
                     <p className="text-sm text-slate-700 leading-snug">{ev.message}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{ev.timestamp}</p>
+                    <p className="text-xs text-slate-400 mt-0.5">{relativeTime(ev.timestamp)}</p>
                   </div>
                 </div>
               ))}
@@ -731,7 +755,7 @@ function ProcessingJobsScreen() {
                           <div className="h-2 rounded-full bg-emerald-100 overflow-hidden"><div className="h-full rounded-full bg-emerald-400 w-full" /></div>
                         ) : <span className="text-slate-300">—</span>}
                       </td>
-                      <td className="px-5 py-4 text-xs text-slate-400 whitespace-nowrap">{j.startedAt}</td>
+                      <td className="px-5 py-4 text-xs text-slate-400 whitespace-nowrap">{formatDateTime(j.startedAt)}</td>
                       <td className="px-5 py-4 text-xs text-slate-400 whitespace-nowrap">{j.duration}</td>
                       <td className="px-5 py-4">
                         {j.status === "failed" && (
@@ -926,8 +950,8 @@ function KnowledgeReviewScreen() {
 
 function VaultBrowserScreen() {
   const { data: tree } = useApi(api.vault.tree, seedVaultTree);
-  const [selectedPath, setSelectedPath] = useState<string | null>("Claude AI/Claude 3.5 Sonnet Release Notes.md");
-  const [fileData, setFileData] = useState<VaultFile | null>(seedVaultFile);
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const [fileData, setFileData] = useState<VaultFile | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["Indian Insurance", "Claude AI", "Backend Dev"]));
   const [search, setSearch] = useState("");
   const abortRef = useRef<AbortController | null>(null);
@@ -1068,14 +1092,34 @@ function SettingsScreen() {
   const [cleanup, setCleanup] = useState(seedSettings.cleanup);
   const [notifs, setNotifs] = useState(seedSettings.notifications);
   const [team, setTeam] = useState(seedSettings.team);
+  const [claudeKey, setClaudeKey] = useState("");
+  const [openaiKey, setOpenaiKey] = useState("");
+  const hasLoaded = useRef(false);
+  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
-    if (settings) { setVault(settings.vault); setAi(settings.aiProviders); setPrivacy(settings.privacy); setDiscovery(settings.discovery); setCleanup(settings.cleanup); setNotifs(settings.notifications); setTeam(settings.team); }
+    if (settings && !hasLoaded.current) {
+      hasLoaded.current = true;
+      setVault(settings.vault);
+      setAi(settings.aiProviders);
+      setPrivacy(settings.privacy);
+      setDiscovery(settings.discovery);
+      setCleanup(settings.cleanup);
+      setNotifs(settings.notifications);
+      setTeam(settings.team);
+    }
   }, [settings]);
 
   async function save(section: string, payload: unknown) {
     try { await api.settings.update(section, payload); toast.success("Settings saved"); }
     catch { toast.error("Save failed"); }
+  }
+
+  async function saveAiProviders() {
+    if (claudeKey && !claudeKey.startsWith("sk-ant-")) { toast.error("Anthropic keys must start with sk-ant-"); return; }
+    if (openaiKey && !openaiKey.startsWith("sk-")) { toast.error("OpenAI keys must start with sk-"); return; }
+    const payload: AIProvidersWrite = { claudeKey: claudeKey || undefined, openaiKey: openaiKey || undefined, ollamaUrl: ai.ollamaUrl, fallbackOrder: ai.fallbackOrder };
+    await save("ai_providers", payload);
   }
 
   const inputCls = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 bg-white transition-all placeholder:text-slate-400";
@@ -1120,27 +1164,30 @@ function SettingsScreen() {
           <label className={labelCls}>Vault path</label>
           <div className="flex gap-2">
             <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} />
-            <Button variant="secondary" size="md" onClick={async () => {
+            <Button variant="secondary" size="md" disabled={picking} onClick={async () => {
               if (!("showDirectoryPicker" in window)) {
                 toast.error("Directory picker not supported in this browser — type the path manually.");
                 return;
               }
+              setPicking(true);
               try {
-                const handle = await (window as Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
-                setVault({ ...vault, path: handle.name });
+                await (window as Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
+                toast.info("Browsers only expose the folder name, not the full path. Please type the complete vault path manually.");
               } catch (err: unknown) {
                 if (err instanceof DOMException && err.name === "AbortError") return;
                 toast.error("Could not open folder picker — type the path manually.");
+              } finally {
+                setPicking(false);
               }
-            }}><FolderOpen className="size-4" /> Browse</Button>
+            }}><FolderOpen className="size-4" /> {picking ? "Picking…" : "Browse"}</Button>
           </div>
         </div>
       </Section>
 
-      <Section title="AI Providers" description="API keys and fallback order for note generation" onSave={() => save("aiProviders", ai)}>
+      <Section title="AI Providers" description="API keys and fallback order for note generation" onSave={saveAiProviders}>
         <div className="grid grid-cols-2 gap-4">
-          <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={ai.claudeKey} onChange={(e) => setAi({ ...ai, claudeKey: e.target.value })} placeholder="sk-ant-…" /></div>
-          <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={ai.openaiKey} onChange={(e) => setAi({ ...ai, openaiKey: e.target.value })} placeholder="sk-…" /></div>
+          <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} /></div>
+          <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} /></div>
         </div>
         <div>
           <label className={labelCls}>Fallback order</label>

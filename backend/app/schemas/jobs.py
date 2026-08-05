@@ -17,7 +17,7 @@ class Job(CamelModel):
         "Extraction", "Transcription", "Analysis", "PII Check",
         "Note Gen", "Verification", "Graphify Sync", "Cleanup",
     ]
-    status: Literal["running", "queued", "completed", "failed"]
+    status: Literal["running", "queued", "done", "completed", "failed"]
     progress: int
     started_at: str
     duration: str

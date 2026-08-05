@@ -20,7 +20,7 @@ async def list_notes(
     rows = await db.fetch(
         """SELECT id, title, source, generated_at, ai_action, quality_score,
                   has_duplicate, content, frontmatter, citations, wiki_links,
-                  similarity_reasoning, status
+                  similarity_reasoning, similar_to, status
            FROM notes WHERE user_id=$1 AND status != 'rejected'
            ORDER BY generated_at DESC""",
         uuid.UUID(user_id),
@@ -39,6 +39,7 @@ async def list_notes(
             "citations": r["citations"] or [],
             "wikiLinks": r["wiki_links"] or [],
             "similarityReasoning": r["similarity_reasoning"],
+            "similarTo": str(r["similar_to"]) if r["similar_to"] else None,
         }
         for r in rows
     ]

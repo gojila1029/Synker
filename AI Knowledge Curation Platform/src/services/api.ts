@@ -27,11 +27,13 @@ async function GET<T>(path: string, fallback: T): Promise<T> {
       headers: await getAuthHeaders(),
       signal: AbortSignal.timeout(10000),
     });
+    if (res.status === 401) throw new UnauthorizedError();
     if (!res.ok) throw new Error(`${res.status}`);
     _failStreak = 0;
     _isDemo = false;
     return res.json() as Promise<T>;
-  } catch {
+  } catch (e) {
+    if (e instanceof UnauthorizedError) throw e;
     if (++_failStreak >= 2) _isDemo = true;
     return fallback;
   }
@@ -87,8 +89,8 @@ async function DELETE_REQ(path: string): Promise<void> {
 
 export const api = {
   dashboard: {
-    getStats: () => GET<DashboardStats>("/api/dashboard/stats", seedStats),
-    getActivity: () => GET<ActivityEvent[]>("/api/dashboard/activity", seedActivity),
+    getStats: () => GET<DashboardStats | null>("/api/dashboard/stats", null),
+    getActivity: () => GET<ActivityEvent[] | null>("/api/dashboard/activity", null),
   },
   topics: {
     list: () => GET<Topic[]>("/api/topics", seedTopics),
@@ -116,6 +118,7 @@ export const api = {
   jobs: {
     list: () => GET<Job[]>("/api/jobs", seedJobs),
     retry: (id: string) => POST(`/api/jobs/${id}/retry`),
+    cancel: (id: string) => POST(`/api/jobs/${id}/cancel`),
   },
   notes: {
     list: () => GET<Note[]>("/api/notes", seedNotes),

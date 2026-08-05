@@ -1,6 +1,7 @@
 export interface DashboardStats {
   pendingApprovals: number;
-  activeJobs: number;
+  runningJobs: number;
+  queuedJobs: number;
   notesToday: number;
   sourcesIndexed: number;
   pipelineCounts: Record<string, number>;
@@ -94,9 +95,23 @@ export interface VaultFile {
   cloudSafe: boolean;
 }
 
+export interface AIProvidersRead {
+  claudeKeySet: boolean;
+  openaiKeySet: boolean;
+  ollamaUrl: string;
+  fallbackOrder: string[];
+}
+
+export interface AIProvidersWrite {
+  claudeKey?: string;
+  openaiKey?: string;
+  ollamaUrl: string;
+  fallbackOrder: string[];
+}
+
 export interface Settings {
   vault: { path: string; name: string };
-  aiProviders: { claudeKey: string; openaiKey: string; ollamaUrl: string; fallbackOrder: string[] };
+  aiProviders: AIProvidersRead;
   privacy: { piiMode: "regex" | "ml"; blockInsuranceData: boolean; cloudBlockList: string[] };
   discovery: { defaultInterval: number; youtubeInterval: number; webInterval: number; pdfInterval: number; localDebounce: number };
   cleanup: { youtube: "keep" | "zip" | "delete"; web: "keep" | "zip" | "delete"; pdf: "keep" | "zip" | "delete"; local: "keep" | "zip" | "delete" };

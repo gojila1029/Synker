@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
 from app.api.deps import get_current_user, get_db
+from app.schemas.sources import SourceCreate
 
 router = APIRouter()
 
@@ -40,22 +41,22 @@ async def list_sources(
 
 @router.post("")
 async def add_source(
-    body: dict[str, Any],
+    body: SourceCreate,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
-    topic_id = body.get("topicId")
+    topic_id = body.topic_id
     row = await db.fetchrow(
         """INSERT INTO sources (user_id, topic_id, type, title, url, schedule)
            VALUES ($1, $2, $3, $4, $5, $6)
            RETURNING id, type, title, url, topic_id, status, schedule, added_at""",
         uuid.UUID(user_id),
         uuid.UUID(topic_id) if topic_id else None,
-        body.get("type", "web"),
-        body.get("title", ""),
-        body.get("url", ""),
-        body.get("schedule"),
+        body.type,
+        body.title,
+        body.url,
+        None,
     )
     if row is None:
         return {"id": "", "type": body.get("type", "web"), "title": body.get("title", ""),

@@ -5,6 +5,7 @@ import asyncpg
 from fastapi import APIRouter, Depends
 
 from app.api.deps import get_current_user, get_db
+from app.schemas.candidates import BulkIds
 
 router = APIRouter()
 
@@ -57,12 +58,12 @@ async def list_candidates(
 
 @router.post("/approve")
 async def approve_candidates(
-    body: dict[str, Any],
+    body: BulkIds,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
-    raw_ids = body.get("ids", [])
+    raw_ids = body.ids
     ids = [uuid.UUID(i) for i in raw_ids if _is_uuid(i)]
     affected = 0
     if ids:
@@ -77,12 +78,12 @@ async def approve_candidates(
 
 @router.post("/reject")
 async def reject_candidates(
-    body: dict[str, Any],
+    body: BulkIds,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
-    raw_ids = body.get("ids", [])
+    raw_ids = body.ids
     ids = [uuid.UUID(i) for i in raw_ids if _is_uuid(i)]
     affected = 0
     if ids:

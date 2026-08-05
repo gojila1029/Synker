@@ -53,6 +53,27 @@ async def list_jobs(
     ]
 
 
+@router.post("/{job_id}/cancel")
+async def cancel_job(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+) -> dict[str, Any]:
+    user_id = current_user["sub"]
+    try:
+        jid = uuid.UUID(job_id)
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return {"cancelled": job_id}
+    await db.execute(
+        "UPDATE jobs SET status='failed', error='Cancelled by user', finished_at=now() "
+        "WHERE id=$1 AND user_id=$2 AND status IN ('queued','running')",
+        jid,
+        uid,
+    )
+    return {"cancelled": job_id}
+
+
 @router.post("/{job_id}/retry")
 async def retry_job(
     job_id: str,
