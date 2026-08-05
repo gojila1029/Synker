@@ -1,4 +1,5 @@
-﻿import uuid
+﻿import json
+import uuid
 from typing import Any
 
 import asyncpg
@@ -63,17 +64,26 @@ async def get_activity(
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
-        """SELECT id, event_type, message, created_at
+        """SELECT id, entity_type, entity_id, action, details, created_at
            FROM processing_log WHERE user_id=$1
            ORDER BY created_at DESC LIMIT 50""",
         uuid.UUID(user_id),
     )
-    return [
-        {
-            "id": str(r["id"]),
-            "type": r["event_type"],
-            "message": r["message"],
-            "timestamp": r["created_at"].isoformat() if r["created_at"] else None,
-        }
-        for r in rows
-    ]
+    events: list[dict[str, Any]] = []
+    for r in rows:
+        details = r["details"]
+        if isinstance(details, str):
+            try:
+                details = json.loads(details)
+            except (ValueError, TypeError):
+                details = {}
+        message = details.get("message") if isinstance(details, dict) else None
+        events.append(
+            {
+                "id": str(r["id"]),
+                "type": r["action"],
+                "message": message or f"{r['action']} {r['entity_type']}",
+                "timestamp": r["created_at"].isoformat() if r["created_at"] else None,
+            }
+        )
+    return events

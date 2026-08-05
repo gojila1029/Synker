@@ -59,8 +59,8 @@ async def add_source(
         None,
     )
     if row is None:
-        return {"id": "", "type": body.get("type", "web"), "title": body.get("title", ""),
-                "url": body.get("url", ""), "topicId": topic_id, "status": "queued",
+        return {"id": "", "type": body.type, "title": body.title,
+                "url": body.url, "topicId": topic_id, "status": "queued",
                 "addedAt": None, "schedule": None}
     return {
         "id": str(row["id"]),

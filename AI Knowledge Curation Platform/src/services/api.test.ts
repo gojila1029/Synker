@@ -177,16 +177,18 @@ describe('UnauthorizedError on 401', () => {
     await expect(api.sources.delete('src-1')).rejects.toBeInstanceOf(UnauthorizedError)
   })
 
-  it('GET on 401 enters demo mode after two failures instead of throwing', async () => {
+  it('GET on 401 re-throws UnauthorizedError and does NOT enter demo mode', async () => {
+    // A 401 is an auth failure, not a backend-unavailable signal. It must
+    // propagate so the app can prompt re-login, never silently fall to demo data.
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
       ok: false,
       status: 401,
       text: () => Promise.resolve('Unauthorized'),
     }))
-    const { api, isDemoMode } = await import('./api')
-    await expect(api.topics.list()).resolves.toBeDefined()
-    await expect(api.topics.list()).resolves.toBeDefined()
-    expect(isDemoMode()).toBe(true)
+    const { api, UnauthorizedError, isDemoMode } = await import('./api')
+    await expect(api.topics.list()).rejects.toBeInstanceOf(UnauthorizedError)
+    await expect(api.topics.list()).rejects.toBeInstanceOf(UnauthorizedError)
+    expect(isDemoMode()).toBe(false)
   })
 })
 

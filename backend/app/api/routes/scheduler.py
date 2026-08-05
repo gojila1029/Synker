@@ -25,7 +25,16 @@ async def trigger_discovery(
     user_id = current_user["sub"]
     uid = uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0)
     row = await db.fetchrow(
-        "INSERT INTO jobs (user_id, source_title, type) VALUES ($1, 'Discovery Run', 'Analysis') RETURNING id",
+        "INSERT INTO jobs (user_id, source_title, type) "
+        "VALUES ($1, 'Discovery Run', 'Analysis') RETURNING id",
         uid,
     )
+    if row is not None:
+        await db.execute(
+            "INSERT INTO processing_log (user_id, entity_type, entity_id, action, details) "
+            "VALUES ($1, 'job', $2, 'created', $3::jsonb)",
+            uid,
+            row["id"],
+            '{"message": "Discovery run triggered"}',
+        )
     return {"triggered": True, "jobId": str(row["id"]) if row else None}

@@ -1,4 +1,5 @@
-﻿import logging
+﻿import asyncio
+import logging
 import os
 import uuid
 from contextlib import asynccontextmanager
@@ -13,20 +14,20 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 from slowapi.util import get_remote_address
 
-from app.core.config import settings
-from app.db.client import close_pool, get_pool
 from app.api.routes import (
-    health,
-    dashboard,
-    topics,
-    sources,
     candidates,
+    dashboard,
+    health,
     jobs,
     notes,
-    vault,
-    settings_route,
     scheduler,
+    settings_route,
+    sources,
+    topics,
+    vault,
 )
+from app.core.config import settings
+from app.db.client import close_pool, get_pool
 
 logging.basicConfig(
     level=logging.INFO,
@@ -60,8 +61,25 @@ async def lifespan(app: FastAPI):
         _log.info("DB pool initialized")
     except Exception as exc:  # noqa: BLE001
         _log.warning("DB pool init failed at startup (%s); will retry on first request", exc)
-    yield
-    await close_pool()
+
+    stop = asyncio.Event()
+    worker_tasks: list[asyncio.Task[None]] = []
+    if settings.worker_enabled:
+        from app.worker.runner import reaper_loop, worker_loop
+
+        worker_tasks = [
+            asyncio.create_task(worker_loop(stop)),
+            asyncio.create_task(reaper_loop(stop)),
+        ]
+        _log.info("Job worker enabled")
+
+    try:
+        yield
+    finally:
+        stop.set()
+        if worker_tasks:
+            await asyncio.gather(*worker_tasks, return_exceptions=True)
+        await close_pool()
 
 
 app = FastAPI(title="Synker API", version="0.1.0", lifespan=lifespan)

@@ -47,7 +47,8 @@ async def list_jobs(
             "error": r["error"],
             "artifactPath": r["artifact_path"],
             "startedAt": r["started_at"].isoformat() if r["started_at"] else None,
-            "duration": _format_duration(r["started_at"], r["finished_at"]),
+            "duration": "—" if r["status"] == "queued"
+            else _format_duration(r["started_at"], r["finished_at"]),
         }
         for r in rows
     ]

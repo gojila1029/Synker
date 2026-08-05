@@ -113,3 +113,45 @@ async def test_protected_routes_reject_unauthenticated(client):
     """Protected routes must return 401 when no token is supplied."""
     response = await client.get("/api/settings")
     assert response.status_code == 401
+
+
+# ── Note state machine (SYN-V5-015) ─────────────────────────────────────────────
+
+async def test_note_approve_returns_409_when_not_pending():
+    """Approving a note whose row is no longer pending (UPDATE affects 0 rows)
+    must return 409, not a false success — this is what stops accept+reject
+    from both succeeding on the same note."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.api.deps import get_current_user, get_db
+    from app.main import app
+    from tests.conftest import MOCK_USER
+
+    class _ConflictConn:
+        async def execute(self, *args, **kwargs):
+            return "UPDATE 0"
+
+        async def fetch(self, *args, **kwargs):
+            return []
+
+        async def fetchrow(self, *args, **kwargs):
+            return None
+
+        async def fetchval(self, *args, **kwargs):
+            return None
+
+    async def _conflict_db():
+        yield _ConflictConn()
+
+    app.dependency_overrides[get_current_user] = lambda: MOCK_USER
+    app.dependency_overrides[get_db] = _conflict_db
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as ac:
+            resp = await ac.post(
+                "/api/notes/00000000-0000-0000-0000-0000000000ab/approve"
+            )
+        assert resp.status_code == 409
+    finally:
+        app.dependency_overrides.clear()

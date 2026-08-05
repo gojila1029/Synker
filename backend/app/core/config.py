@@ -14,6 +14,12 @@ class Settings(BaseSettings):
     database_url: str = ""
     cors_origins: str = "http://localhost:5173"
 
+    # In-process job worker (SYN-V5-002). Enable only after migration 002 is applied.
+    worker_enabled: bool = False
+    worker_poll_seconds: float = 5.0
+    worker_concurrency: int = 2
+    job_stale_seconds: int = 120
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

@@ -11,7 +11,20 @@ from app.core.config import settings
 
 _log = logging.getLogger(__name__)
 _bearer = HTTPBearer(auto_error=False)
-_jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
+_jwks_client: PyJWKClient | None = None
+
+
+def _get_jwks_client() -> PyJWKClient:
+    """Build the JWKS client lazily so an unset/empty SUPABASE_URL cannot crash
+    module import (and therefore server boot and test collection)."""
+    global _jwks_client
+    if _jwks_client is None:
+        if not settings.supabase_url:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token"
+            )
+        _jwks_client = PyJWKClient(f"{settings.supabase_url}/auth/v1/.well-known/jwks.json")
+    return _jwks_client
 
 
 def get_current_user(
@@ -20,7 +33,7 @@ def get_current_user(
     if creds is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     try:
-        signing_key = _jwks_client.get_signing_key_from_jwt(creds.credentials)
+        signing_key = _get_jwks_client().get_signing_key_from_jwt(creds.credentials)
         payload: dict[str, Any] = jwt.decode(
             creds.credentials,
             signing_key.key,

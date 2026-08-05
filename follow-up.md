@@ -97,6 +97,46 @@ Never close an item without a resolution summary. Never leave Status as `in-prog
 | B4.4 | Split activeJobs + Cancel | done | dashboard.py runningJobs/queuedJobs; jobs.py /cancel; types + api.ts + App.tsx |
 
 ---
+## SYN-V5 comprehensive-report fix batch (2026-08-06)
+
+Source: `Synker_V5_Comprehensive_Issue_Report.md`. Ran frontend + backend test suites and debugged root causes. Backend was fully down (could not even import); several report items were already fixed in prior commits (noted below).
+
+| Fix | Report ID(s) | Area | Status | Notes |
+|-----|-------------|------|--------|-------|
+| B1 | (boot blocker) | Backend / security | done | security.py built PyJWKClient at import → crashed on empty SUPABASE_URL, blocking server boot AND all pytest collection. Now lazy + cached. |
+| B1b | (latent) | Backend / sources | done | sources.py add_source used `body.get()` on a Pydantic model in the row-None branch → 500. Now attribute access. |
+| B1c | (latent) | Backend / health | done | /health returned 200 even when DB unreachable → platform could never detect an unhealthy instance. Now 503 when DB down (app still boots). |
+| B2 | SYN-V5-015/014/016/013 | Backend / notes | done | approve/reject were unconditional UPDATEs that always returned 200 → accept+reject both succeeded. Now require status='pending', return 409 on invalid transition; list_notes returns pending-only so accepted/rejected notes leave the queue. |
+| B3 | SYN-V5-008 | Backend / activity | done | dashboard activity queried non-existent columns (event_type/message) → always errored → blank feed. Fixed to real processing_log columns; scheduler.trigger now writes an activity row. |
+| F1 | SYN-V5-004 | Frontend / Settings | done | Section/Toggle were defined INSIDE SettingsScreen → remount every keystroke → focus loss. Hoisted to module scope (SettingsSection/SettingsToggle). |
+| F2 | SYN-V5-012/014/016 | Frontend / Knowledge Review | done | `selected` was a stored Note never reconciled with the list. Now derived from list by id; clears/advances when a note leaves the pending queue. |
+| F3 | SYN-V5-003 | Frontend / hydration | done | useApi uses fallback as INITIAL data → seedJobs/seedCandidates/seedNotes flashed fake counts. Dropped seed fallbacks from jobs/candidates/notes; skeletons show until live data. |
+| F4 | SYN-V5-006 | Frontend / Settings | done | save() showed generic "Save failed"; now surfaces the real HTTP status/reason via e.message. |
+| T1 | — | Tests | done | Rewrote stale api.test.ts 401 test (now asserts UnauthorizedError re-throw, no demo mode). Added backend test asserting note approve → 409 when not pending. Frontend 21/21, backend 27/27. |
+| — | SYN-V5-002 | Backend / worker | OPEN | Jobs stay Queued forever because NO worker/consumer exists to claim jobs and drive queued→running→done. Architectural; requires a background worker (out of scope for this pass). Flagged as the top remaining risk. |
+| — | SYN-V5-001/007/009/010 | — | already fixed | Refresh feedback, Active-Jobs running/queued split, and Sources/Approval empty states were already implemented in prior commits; the v5 video predates them. |
+
+Remaining lint debt: `ruff check app/` reports 15 pre-existing errors in untouched files (e.g. `Optional[...]` → `X | None` in schemas). Not addressed in this pass to avoid scope creep.
+
+---
+## SYN-V5-002 — Job worker & lifecycle (2026-08-06)
+
+Resolves the "jobs stuck Queued forever" defect: added an in-process asyncio worker that claims and drives jobs to completion, with heartbeat + stale recovery. Decisions (user-approved): in-process worker, additive migration (user applies), honest no-op discovery handler, defaults 2 concurrent / 5s poll / 120s stale.
+
+| Item | Area | Status | Notes |
+|------|------|--------|-------|
+| Migration 002 | DB | done (not applied) | `supabase/migrations/002_job_heartbeat.sql` adds `heartbeat_at`, `claimed_by`, index `idx_jobs_claim`. Additive/nullable. **USER must apply** (`supabase db push`) then set `WORKER_ENABLED=true`. |
+| Worker config | Backend | done | config.py: `worker_enabled`(False default), `worker_poll_seconds`(5), `worker_concurrency`(2), `job_stale_seconds`(120). |
+| Handlers | Backend | done | app/worker/handlers.py: type→handler registry; discovery handler runs an honest no-op (real progress, fabricates nothing — reports "no source adapters configured yet"). |
+| Runner | Backend | done | app/worker/runner.py: atomic claim (`FOR UPDATE SKIP LOCKED`), running→terminal lifecycle, progress+heartbeat, cancel-safe writes (`WHERE status='running'`), processing_log event on terminal. |
+| Reaper | Backend | done | same module: fails `running` jobs whose heartbeat exceeds `job_stale_seconds` → retriable/cancellable via existing routes. |
+| Lifespan wiring | Backend | done | main.py starts/stops worker+reaper tasks when `worker_enabled`; clean drain on shutdown. Env-gated so tests/CI don't spin it up. |
+| Duration display | Backend | done | jobs.py list: queued jobs show `"—"` instead of `"0s"`. |
+| Tests | Tests | done | tests/test_worker.py (9 tests): claim, complete+log, unknown-type→failed, stale reaper, honest discovery handler, `_affected` parsing. Backend 36/36 pass, ruff clean on all changed files. |
+
+**Deploy sequence for the user:** (1) apply migration 002 to Supabase; (2) set `WORKER_ENABLED=true` on Railway; (3) redeploy. Until then the worker stays off (default) and behavior is unchanged. Not committed yet.
+
+---
 ## Completed actions
 
 | # | Item | Completed | Resolution |

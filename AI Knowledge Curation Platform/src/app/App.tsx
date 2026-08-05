@@ -13,8 +13,7 @@ import { useApi } from "../hooks/useApi";
 import { api, isDemoMode, BASE } from "../services/api";
 import type { Topic, Source, Candidate, Job, Note, VaultNode, VaultFile } from "../types";
 import {
-  seedStats, seedActivity, seedTopics, seedSources, seedCandidates,
-  seedJobs, seedNotes, seedVaultTree, seedVaultFile, seedSettings,
+  seedTopics, seedSources, seedVaultTree, seedSettings,
 } from "../data/seed";
 
 // ─── Design primitives ────────────────────────────────────────────────────────
@@ -520,7 +519,7 @@ function SourcesScreen() {
 // ─── Candidate Approval ───────────────────────────────────────────────────────
 
 function CandidateApprovalScreen() {
-  const { data: candidates, loading, refetch } = useApi(api.candidates.list, seedCandidates);
+  const { data: candidates, loading, refetch } = useApi(api.candidates.list);
   const { data: topics } = useApi(api.topics.list, seedTopics);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -671,7 +670,7 @@ function CandidateApprovalScreen() {
 // ─── Processing Jobs ──────────────────────────────────────────────────────────
 
 function ProcessingJobsScreen() {
-  const { data: jobs, loading, refetch } = useApi(api.jobs.list, seedJobs);
+  const { data: jobs, loading, refetch } = useApi(api.jobs.list);
   const [filter, setFilter] = useState<"all" | Job["status"]>("all");
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
 
@@ -789,11 +788,20 @@ function ProcessingJobsScreen() {
 // ─── Knowledge Review ─────────────────────────────────────────────────────────
 
 function KnowledgeReviewScreen() {
-  const { data: notes, loading, refetch } = useApi(api.notes.list, seedNotes);
-  const [selected, setSelected] = useState<Note | null>(null);
+  const { data: notes, loading, refetch } = useApi(api.notes.list);
+  // Selection is derived from the fetched list by id — never a stored Note object.
+  // This keeps count, list, and detail from disagreeing: when a note leaves the
+  // pending queue (accepted/rejected), it also disappears from the detail pane.
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showReasoning, setShowReasoning] = useState(false);
 
-  useEffect(() => { if (notes && notes.length > 0 && !selected) setSelected(notes[0]); }, [notes]);
+  const selected = (notes ?? []).find((n) => n.id === selectedId) ?? null;
+
+  useEffect(() => {
+    const list = notes ?? [];
+    if (list.length === 0) { setSelectedId(null); return; }
+    if (!selectedId || !list.some((n) => n.id === selectedId)) setSelectedId(list[0].id);
+  }, [notes, selectedId]);
 
   const [noteActing, setNoteActing] = useState<"approve" | "reject" | null>(null);
   async function handleApprove(id: string) {
@@ -825,7 +833,7 @@ function KnowledgeReviewScreen() {
             : (notes ?? []).length === 0
               ? <EmptyState icon={<BookOpen className="size-5" />} title="No notes yet" />
               : (notes ?? []).map((n) => (
-                <button key={n.id} onClick={() => { setSelected(n); setShowReasoning(false); }}
+                <button key={n.id} onClick={() => { setSelectedId(n.id); setShowReasoning(false); }}
                   className={`w-full text-left px-4 py-3.5 border-b border-slate-100 transition-colors ${selected?.id === n.id ? "bg-blue-50 border-l-2 border-l-blue-500" : "hover:bg-slate-50"}`}>
                   <div className="flex items-center justify-between gap-2 mb-1.5">
                     <AiActionBadge action={n.aiAction} />
@@ -1083,6 +1091,38 @@ function VaultBrowserScreen() {
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
 
+// Defined at module scope, NOT inside SettingsScreen: a component defined inside
+// another re-creates its function identity on every render, so React unmounts and
+// remounts the whole subtree each keystroke — which is what stole input focus.
+function SettingsToggle({ checked, onChange, label, description }: { checked: boolean; onChange: () => void; label: string; description?: string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 py-3">
+      <div>
+        <p className="text-sm font-medium text-slate-800">{label}</p>
+        {description && <p className="text-xs text-slate-500 mt-0.5">{description}</p>}
+      </div>
+      <button onClick={onChange} className={`relative inline-flex h-6 w-11 rounded-full transition-colors shrink-0 focus:outline-none ${checked ? "bg-blue-600" : "bg-slate-200"}`}>
+        <span className={`inline-block size-4 rounded-full bg-white shadow-sm transition-transform mt-1 ${checked ? "translate-x-6" : "translate-x-1"}`} />
+      </button>
+    </div>
+  );
+}
+
+function SettingsSection({ title, description, children, onSave }: { title: string; description?: string; children: React.ReactNode; onSave: () => void }) {
+  return (
+    <Card className="p-6">
+      <div className="mb-5">
+        <h2 className="text-base font-semibold text-slate-900">{title}</h2>
+        {description && <p className="text-sm text-slate-500 mt-0.5">{description}</p>}
+      </div>
+      <div className="space-y-4">{children}</div>
+      <div className="mt-5 pt-4 border-t border-slate-100">
+        <Button onClick={onSave} variant="primary" size="sm">Save changes</Button>
+      </div>
+    </Card>
+  );
+}
+
 function SettingsScreen() {
   const { data: settings } = useApi(api.settings.get, seedSettings);
   const [vault, setVault] = useState(seedSettings.vault);
@@ -1112,7 +1152,7 @@ function SettingsScreen() {
 
   async function save(section: string, payload: unknown) {
     try { await api.settings.update(section, payload); toast.success("Settings saved"); }
-    catch { toast.error("Save failed"); }
+    catch (e) { toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`); }
   }
 
   async function saveAiProviders() {
@@ -1125,40 +1165,11 @@ function SettingsScreen() {
   const inputCls = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 bg-white transition-all placeholder:text-slate-400";
   const labelCls = "text-sm font-medium text-slate-700 mb-1.5 block";
 
-  function Toggle({ checked, onChange, label, description }: { checked: boolean; onChange: () => void; label: string; description?: string }) {
-    return (
-      <div className="flex items-center justify-between gap-4 py-3">
-        <div>
-          <p className="text-sm font-medium text-slate-800">{label}</p>
-          {description && <p className="text-xs text-slate-500 mt-0.5">{description}</p>}
-        </div>
-        <button onClick={onChange} className={`relative inline-flex h-6 w-11 rounded-full transition-colors shrink-0 focus:outline-none ${checked ? "bg-blue-600" : "bg-slate-200"}`}>
-          <span className={`inline-block size-4 rounded-full bg-white shadow-sm transition-transform mt-1 ${checked ? "translate-x-6" : "translate-x-1"}`} />
-        </button>
-      </div>
-    );
-  }
-
-  function Section({ title, description, children, onSave }: { title: string; description?: string; children: React.ReactNode; onSave: () => void }) {
-    return (
-      <Card className="p-6">
-        <div className="mb-5">
-          <h2 className="text-base font-semibold text-slate-900">{title}</h2>
-          {description && <p className="text-sm text-slate-500 mt-0.5">{description}</p>}
-        </div>
-        <div className="space-y-4">{children}</div>
-        <div className="mt-5 pt-4 border-t border-slate-100">
-          <Button onClick={onSave} variant="primary" size="sm">Save changes</Button>
-        </div>
-      </Card>
-    );
-  }
-
   return (
     <div className="p-6 space-y-5 max-w-2xl">
       <SectionHeader title="Settings" description="Configure your vault, AI providers, and preferences" />
 
-      <Section title="Vault" description="Where Synker writes your generated notes" onSave={() => save("vault", vault)}>
+      <SettingsSection title="Vault" description="Where Synker writes your generated notes" onSave={() => save("vault", vault)}>
         <div><label className={labelCls}>Vault name</label><input className={inputCls} value={vault.name} onChange={(e) => setVault({ ...vault, name: e.target.value })} /></div>
         <div>
           <label className={labelCls}>Vault path</label>
@@ -1182,9 +1193,9 @@ function SettingsScreen() {
             }}><FolderOpen className="size-4" /> {picking ? "Picking…" : "Browse"}</Button>
           </div>
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="AI Providers" description="API keys and fallback order for note generation" onSave={saveAiProviders}>
+      <SettingsSection title="AI Providers" description="API keys and fallback order for note generation" onSave={saveAiProviders}>
         <div className="grid grid-cols-2 gap-4">
           <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} /></div>
           <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} /></div>
@@ -1199,9 +1210,9 @@ function SettingsScreen() {
             ))}
           </div>
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="Privacy & Security" description="Control what data reaches cloud AI providers" onSave={() => save("privacy", privacy)}>
+      <SettingsSection title="Privacy & Security" description="Control what data reaches cloud AI providers" onSave={() => save("privacy", privacy)}>
         <div>
           <label className={labelCls}>PII detection method</label>
           <select className={inputCls} value={privacy.piiMode} onChange={(e) => setPrivacy({ ...privacy, piiMode: e.target.value as "regex" | "ml" })}>
@@ -1211,14 +1222,14 @@ function SettingsScreen() {
         </div>
         <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">
           <div className="px-4">
-            <Toggle checked={privacy.blockInsuranceData} onChange={() => setPrivacy({ ...privacy, blockInsuranceData: !privacy.blockInsuranceData })}
+            <SettingsToggle checked={privacy.blockInsuranceData} onChange={() => setPrivacy({ ...privacy, blockInsuranceData: !privacy.blockInsuranceData })}
               label="Block insurance client data from cloud AI"
               description="Prevents policy numbers, Aadhaar, and PAN from being sent to external APIs" />
           </div>
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="Discovery Schedule" description="How often Synker checks each source for new content" onSave={() => save("discovery", discovery)}>
+      <SettingsSection title="Discovery Schedule" description="How often Synker checks each source for new content" onSave={() => save("discovery", discovery)}>
         <div className="grid grid-cols-2 gap-4">
           {([
             { label: "YouTube videos", key: "youtubeInterval", unit: "min" },
@@ -1232,9 +1243,9 @@ function SettingsScreen() {
             </div>
           ))}
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="File Cleanup" description="What happens to downloaded files after notes are verified and published" onSave={() => save("cleanup", cleanup)}>
+      <SettingsSection title="File Cleanup" description="What happens to downloaded files after notes are verified and published" onSave={() => save("cleanup", cleanup)}>
         <div className="grid grid-cols-2 gap-4">
           {(["youtube", "web", "pdf", "local"] as const).map((type) => (
             <div key={type}>
@@ -1247,13 +1258,13 @@ function SettingsScreen() {
             </div>
           ))}
         </div>
-      </Section>
+      </SettingsSection>
 
-      <Section title="Notifications" description="How Synker alerts you when runs complete or fail" onSave={() => save("notifications", notifs)}>
+      <SettingsSection title="Notifications" description="How Synker alerts you when runs complete or fail" onSave={() => save("notifications", notifs)}>
         <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 px-4">
-          <Toggle checked={notifs.desktop} onChange={() => setNotifs({ ...notifs, desktop: !notifs.desktop })} label="Desktop notifications" description="System notification when a pipeline run finishes" />
-          <Toggle checked={notifs.inApp} onChange={() => setNotifs({ ...notifs, inApp: !notifs.inApp })} label="In-app alerts" description="Badge and alert inside Synker" />
-          <Toggle checked={notifs.email} onChange={() => setNotifs({ ...notifs, email: !notifs.email })} label="Email notifications" description="Get emailed on run completion and failures" />
+          <SettingsToggle checked={notifs.desktop} onChange={() => setNotifs({ ...notifs, desktop: !notifs.desktop })} label="Desktop notifications" description="System notification when a pipeline run finishes" />
+          <SettingsToggle checked={notifs.inApp} onChange={() => setNotifs({ ...notifs, inApp: !notifs.inApp })} label="In-app alerts" description="Badge and alert inside Synker" />
+          <SettingsToggle checked={notifs.email} onChange={() => setNotifs({ ...notifs, email: !notifs.email })} label="Email notifications" description="Get emailed on run completion and failures" />
         </div>
         {notifs.email && (
           <div className="grid grid-cols-2 gap-4 pt-1">
@@ -1271,9 +1282,9 @@ function SettingsScreen() {
             </div>
           </div>
         )}
-      </Section>
+      </SettingsSection>
 
-      <Section title="Team" description="Configure who has access to this Synker instance" onSave={() => save("team", team)}>
+      <SettingsSection title="Team" description="Configure who has access to this Synker instance" onSave={() => save("team", team)}>
         <div>
           <label className={labelCls}>Team size</label>
           <select className={inputCls} value={team.tier} onChange={(e) => setTeam({ ...team, tier: e.target.value as "single" | "small" | "larger" })}>
@@ -1303,7 +1314,7 @@ function SettingsScreen() {
             </div>
           </div>
         )}
-      </Section>
+      </SettingsSection>
     </div>
   );
 }
