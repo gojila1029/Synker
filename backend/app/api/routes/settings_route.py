@@ -1,5 +1,7 @@
-﻿import base64
+﻿import asyncio
+import base64
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import asyncpg
@@ -125,4 +127,28 @@ async def update_settings(
         )
 
     return {"section": section, "updated": True}
+
+
+def _open_directory_dialog() -> str:
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes("-topmost", 1)
+        path = filedialog.askdirectory(title="Select Obsidian Vault Folder")
+        root.destroy()
+        return path or ""
+    except Exception:
+        return ""
+
+
+@router.get("/browse-directory")
+async def browse_directory(
+    _current_user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, str]:
+    loop = asyncio.get_event_loop()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        path = await loop.run_in_executor(pool, _open_directory_dialog)
+    return {"path": path}
 

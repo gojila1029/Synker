@@ -1176,16 +1176,11 @@ function SettingsScreen() {
           <div className="flex gap-2">
             <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} />
             <Button variant="secondary" size="md" disabled={picking} onClick={async () => {
-              if (!("showDirectoryPicker" in window)) {
-                toast.error("Directory picker not supported in this browser — type the path manually.");
-                return;
-              }
               setPicking(true);
               try {
-                await (window as Window & { showDirectoryPicker: () => Promise<FileSystemDirectoryHandle> }).showDirectoryPicker();
-                toast.info("Browsers only expose the folder name, not the full path. Please type the complete vault path manually.");
-              } catch (err: unknown) {
-                if (err instanceof DOMException && err.name === "AbortError") return;
+                const { path } = await api.settings.browseDirectory();
+                if (path) setVault({ ...vault, path });
+              } catch {
                 toast.error("Could not open folder picker — type the path manually.");
               } finally {
                 setPicking(false);
