@@ -125,7 +125,7 @@ Resolves the "jobs stuck Queued forever" defect: added an in-process asyncio wor
 
 | Item | Area | Status | Notes |
 |------|------|--------|-------|
-| Migration 002 | DB | done (not applied) | `supabase/migrations/002_job_heartbeat.sql` adds `heartbeat_at`, `claimed_by`, index `idx_jobs_claim`. Additive/nullable. **USER must apply** (`supabase db push`) then set `WORKER_ENABLED=true`. |
+| Migration 002 | DB | done + APPLIED | `supabase/migrations/002_job_heartbeat.sql` adds `heartbeat_at`, `claimed_by`, index `idx_jobs_claim`. Applied to live Supabase Synker project `zrmevxxnyucxjowbzubs` on 2026-08-06 via MCP apply_migration. |
 | Worker config | Backend | done | config.py: `worker_enabled`(False default), `worker_poll_seconds`(5), `worker_concurrency`(2), `job_stale_seconds`(120). |
 | Handlers | Backend | done | app/worker/handlers.py: type→handler registry; discovery handler runs an honest no-op (real progress, fabricates nothing — reports "no source adapters configured yet"). |
 | Runner | Backend | done | app/worker/runner.py: atomic claim (`FOR UPDATE SKIP LOCKED`), running→terminal lifecycle, progress+heartbeat, cancel-safe writes (`WHERE status='running'`), processing_log event on terminal. |
@@ -134,7 +134,13 @@ Resolves the "jobs stuck Queued forever" defect: added an in-process asyncio wor
 | Duration display | Backend | done | jobs.py list: queued jobs show `"—"` instead of `"0s"`. |
 | Tests | Tests | done | tests/test_worker.py (9 tests): claim, complete+log, unknown-type→failed, stale reaper, honest discovery handler, `_affected` parsing. Backend 36/36 pass, ruff clean on all changed files. |
 
-**Deploy sequence for the user:** (1) apply migration 002 to Supabase; (2) set `WORKER_ENABLED=true` on Railway; (3) redeploy. Until then the worker stays off (default) and behavior is unchanged. Not committed yet.
+**Deployment status (2026-08-06):** All three steps done by the agent —
+(1) migration 002 applied to Supabase; (2) `WORKER_ENABLED=true` set on Railway
+service `adaptable-charm` (production); (3) committed `7ad0d7d` and pushed to
+`main`, triggering Railway deploy `1a2dfb3a` (RAILPACK build of `backend/`).
+Roll back the worker any time by setting `WORKER_ENABLED=false` (no redeploy of
+code needed). NOTE: Railway builds only `backend/` — the frontend fixes in this
+commit require a separate frontend deploy (wherever the SPA is hosted).
 
 ---
 ## Completed actions
