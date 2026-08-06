@@ -44,7 +44,7 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
     try:
         async with pool.acquire() as conn:
             sources = await conn.fetch(
-                "SELECT id, type, title, url FROM sources WHERE status='queued' AND user_id=$1",
+                "SELECT id, type, title, url FROM sources WHERE user_id=$1",
                 user_id,
             )
 
@@ -94,13 +94,14 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                     if not existing:
                         await conn.execute(
                             """INSERT INTO candidates
-                               (user_id, title, source_info, domain, published_at,
+                               (user_id, source_id, title, source_info, domain, published_at,
                                 recommendation, quality_score, confidence_score,
                                 duplicate_score, expected_notes, estimated_tokens,
                                 summary, extracted_topics, status)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                                       $11, $12, $13, $14)""",
+                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                                       $12, $13, $14, $15)""",
                             user_id,
+                            source["id"],
                             title,
                             source_url,
                             domain,

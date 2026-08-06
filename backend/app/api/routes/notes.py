@@ -23,18 +23,26 @@ def _rows_affected(result: Any) -> int | None:
 
 @router.get("")
 async def list_notes(
+    status: str | None = None,
     current_user: dict[str, Any] = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
-    rows = await db.fetch(
-        """SELECT id, title, source, generated_at, ai_action, quality_score,
-                  has_duplicate, content, frontmatter, citations, wiki_links,
-                  similarity_reasoning, similar_to, status
-           FROM notes WHERE user_id=$1 AND status = 'pending'
-           ORDER BY generated_at DESC""",
-        uuid.UUID(user_id),
-    )
+    base = """SELECT id, title, source, generated_at, ai_action, quality_score,
+                     has_duplicate, content, frontmatter, citations, wiki_links,
+                     similarity_reasoning, similar_to, status
+              FROM notes WHERE user_id=$1"""
+    if status:
+        rows = await db.fetch(
+            base + " AND status=$2 ORDER BY generated_at DESC",
+            uuid.UUID(user_id),
+            status,
+        )
+    else:
+        rows = await db.fetch(
+            base + " ORDER BY generated_at DESC",
+            uuid.UUID(user_id),
+        )
     return [
         {
             "id": str(r["id"]),
@@ -50,6 +58,7 @@ async def list_notes(
             "wikiLinks": r["wiki_links"] or [],
             "similarityReasoning": r["similarity_reasoning"],
             "similarTo": str(r["similar_to"]) if r["similar_to"] else None,
+            "status": r["status"],
         }
         for r in rows
     ]
