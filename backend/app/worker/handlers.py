@@ -7,6 +7,7 @@ say so honestly. Handlers should handle all exceptions gracefully and return a
 meaningful error message rather than crashing.
 """
 import json
+import os
 import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -410,7 +411,11 @@ async def _graphify_sync_handler(job: dict[str, Any], progress: ProgressFn, pool
 """
 
                 if vault_path:
-                    full_path = Path(vault_path) / file_path
+                    full_path = (Path(vault_path) / file_path).resolve()
+                    vault_root = Path(vault_path).resolve()
+                    if not str(full_path).startswith(str(vault_root) + os.sep):
+                        errors += 1
+                        continue
                     full_path.parent.mkdir(parents=True, exist_ok=True)
                     full_path.write_text(markdown, encoding="utf-8")
 
