@@ -138,5 +138,9 @@ export const api = {
   },
   scheduler: {
     trigger: () => POST("/api/scheduler/trigger"),
+    status: () => GET<{ last_run_at: string | null; next_run_at: string | null; is_running: boolean }>(
+      "/api/scheduler/status",
+      { last_run_at: null, next_run_at: null, is_running: false }
+    ),
   },
 };

@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from typing import Any
 
 import asyncpg
@@ -41,3 +42,32 @@ async def trigger_discovery(
             '{"message": "Discovery run triggered"}',
         )
     return {"triggered": True, "jobId": str(row["id"]) if row else None}
+
+
+@router.get("/status")
+async def get_scheduler_status(
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+) -> dict[str, Any]:
+    user_id = current_user["sub"]
+    try:
+        uid = uuid.UUID(user_id)
+    except ValueError:
+        return {"last_run_at": None, "next_run_at": None, "is_running": False}
+
+    last = await db.fetchrow(
+        """SELECT finished_at FROM jobs
+           WHERE user_id=$1 AND type='Analysis' AND status='completed'
+           ORDER BY finished_at DESC LIMIT 1""",
+        uid,
+    )
+    running = await db.fetchval(
+        "SELECT 1 FROM jobs WHERE user_id=$1 AND type='Analysis' AND status='running' LIMIT 1",
+        uid,
+    )
+    last_run_at = last["finished_at"].isoformat() if last else None
+    next_run_at = None
+    if last and last["finished_at"]:
+        next_run_at = (last["finished_at"] + timedelta(minutes=10)).isoformat()
+
+    return {"last_run_at": last_run_at, "next_run_at": next_run_at, "is_running": bool(running)}

@@ -152,6 +152,19 @@ function relativeTime(ts: string): string {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
+function timeAgo(iso: string): string {
+  return relativeTime(iso);
+}
+
+function timeUntil(iso: string): string {
+  const diff = Math.floor((new Date(iso).getTime() - Date.now()) / 1000);
+  if (isNaN(diff) || diff <= 0) return "now";
+  if (diff < 60) return `${diff}s`;
+  if (diff < 3600) return `${Math.floor(diff / 60)}m`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}h`;
+  return `${Math.floor(diff / 86400)}d`;
+}
+
 function formatDateTime(ts: string): string {
   try {
     return new Date(ts).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
@@ -176,6 +189,13 @@ function DashboardScreen() {
   const [, setNowTick] = useState(0);
   useEffect(() => {
     const id = setInterval(() => setNowTick((t) => t + 1), 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const [syncStatus, setSyncStatus] = useState<{ last_run_at: string | null; next_run_at: string | null; is_running: boolean }>({ last_run_at: null, next_run_at: null, is_running: false });
+  useEffect(() => {
+    api.scheduler.status().then(setSyncStatus);
+    const id = setInterval(() => api.scheduler.status().then(setSyncStatus), 30000);
     return () => clearInterval(id);
   }, []);
 
@@ -211,7 +231,13 @@ function DashboardScreen() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Good morning 👋</h1>
-          <p className="text-sm text-slate-500 mt-0.5">Last sync ran 2 minutes ago · Next in 8 minutes</p>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {syncStatus.is_running
+              ? "Discovery running now..."
+              : syncStatus.last_run_at
+                ? `Last sync ran ${timeAgo(syncStatus.last_run_at)}${syncStatus.next_run_at ? ` · Next in ${timeUntil(syncStatus.next_run_at)}` : ""}`
+                : "No sync runs yet"}
+          </p>
         </div>
         <Button onClick={handleTrigger} variant="primary" disabled={triggering}>
           <Play className="size-4" />{triggering ? "Running…" : "Run Discovery Now"}
