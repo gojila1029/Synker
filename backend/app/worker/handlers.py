@@ -419,6 +419,15 @@ async def _graphify_sync_handler(job: dict[str, Any], progress: ProgressFn, pool
                     full_path.parent.mkdir(parents=True, exist_ok=True)
                     full_path.write_text(markdown, encoding="utf-8")
 
+                    try:
+                        content = full_path.read_text(encoding="utf-8")
+                        if not content:
+                            errors += 1
+                            continue
+                    except Exception:
+                        errors += 1
+                        continue
+
                 async with pool.acquire() as conn:
                     await conn.execute(
                         """INSERT INTO vault_files
@@ -471,28 +480,47 @@ async def _cleanup_handler(job: dict[str, Any], progress: ProgressFn, pool: Any)
             cleanup_settings = settings_row["cleanup"] if settings_row else {}
 
             approved_notes = await conn.fetch(
-                """SELECT source FROM notes
+                """SELECT source, artifact_path FROM notes
                    WHERE user_id=$1 AND status='approved'
                    AND artifact_path IS NOT NULL AND artifact_path != ''
                    ORDER BY generated_at DESC LIMIT 50""",
                 user_id,
             )
 
+            sources = await conn.fetch(
+                "SELECT id, url, type FROM sources WHERE user_id=$1", user_id
+            )
+
+        source_map = {src["url"]: src for src in sources}
+
         processed = 0
         for note in approved_notes:
             source_url = note["source"]
+            artifact_path = note["artifact_path"]
             cleanup_policy = cleanup_settings.get("web", "keep")
 
             if cleanup_policy == "keep":
                 pass
             elif cleanup_policy == "delete":
-                try:
-                    source_path = Path(source_url)
-                    if source_path.exists() and source_path.is_file():
-                        source_path.unlink()
-                        processed += 1
-                except Exception:
-                    pass
+                src = source_map.get(source_url)
+                if src and src["type"] == "local" and artifact_path:
+                    try:
+                        source_path = Path(source_url)
+                        if source_path.exists() and source_path.is_file():
+                            source_path.unlink()
+                            async with pool.acquire() as conn:
+                                await conn.execute(
+                                    """INSERT INTO processing_log
+                                       (user_id, job_type, status, details)
+                                       VALUES ($1, $2, $3, $4)""",
+                                    user_id,
+                                    "Cleanup",
+                                    "deleted",
+                                    f"Deleted source file: {source_url}",
+                                )
+                            processed += 1
+                    except Exception:
+                        pass
             elif cleanup_policy == "zip":
                 pass
 
