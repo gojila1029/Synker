@@ -74,6 +74,24 @@ async def add_source(
     }
 
 
+@router.patch("/{source_id}/reset")
+async def reset_source(
+    source_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+) -> dict[str, Any]:
+    user_id = current_user["sub"]
+    try:
+        sid, uid = uuid.UUID(source_id), uuid.UUID(user_id)
+    except ValueError:
+        return {"reset": source_id}
+    row = await db.fetchrow(
+        "UPDATE sources SET status='queued', updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, status",
+        sid, uid,
+    )
+    return {"reset": source_id, "status": row["status"] if row else "not_found"}
+
+
 @router.delete("/{source_id}")
 async def delete_source(
     source_id: str,

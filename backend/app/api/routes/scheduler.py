@@ -2,7 +2,7 @@ import uuid
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_current_user, get_db
 
@@ -24,6 +24,9 @@ async def trigger_discovery(
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     uid = uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0)
+    count = await db.fetchval("SELECT COUNT(*) FROM sources WHERE user_id=$1", uid)
+    if not count:
+        raise HTTPException(status_code=400, detail="No sources found — add some first")
     row = await db.fetchrow(
         "INSERT INTO jobs (user_id, source_title, type) "
         "VALUES ($1, 'Discovery Run', 'Analysis') RETURNING id",

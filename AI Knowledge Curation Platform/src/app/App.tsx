@@ -1,4 +1,5 @@
-﻿import { useState, useEffect, useRef } from "react";
+﻿import DOMPurify from "dompurify";
+import { useState, useEffect, useRef } from "react";
 import { toast, Toaster } from "sonner";
 import { useAuth } from "../hooks/useAuth";
 import { LoginPage } from "./LoginPage";
@@ -447,6 +448,15 @@ function SourcesScreen() {
                   </div>
                   <div className="flex items-center gap-2">
                     <StatusBadge status={s.status} />
+                    {(s.status === "done" || s.status === "processing" || s.status === "failed") && (
+                      <button
+                        onClick={() => api.sources.reset(s.id).then(() => { toast.success("Source reset to queued"); refetch(); }).catch((e: unknown) => toast.error(`Reset failed: ${e instanceof Error ? e.message : "Request failed"}`))}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg hover:bg-blue-50 text-slate-400 hover:text-blue-500"
+                        title="Reset to queued"
+                      >
+                        <RotateCcw className="size-3.5" />
+                      </button>
+                    )}
                     <button onClick={() => api.sources.delete(s.id).then(() => { toast.success("Removed"); refetch(); }).catch((e: unknown) => toast.error(`Remove failed: ${e instanceof Error ? e.message : "Request failed"}`))}
                       className="opacity-0 group-hover:opacity-100 transition-opacity p-1 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500">
                       <Trash2 className="size-3.5" />
@@ -673,6 +683,7 @@ function ProcessingJobsScreen() {
   const { data: jobs, loading, refetch } = useApi(api.jobs.list);
   const [filter, setFilter] = useState<"all" | Job["status"]>("all");
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
 
   const [refreshing, setRefreshing] = useState(false);
 
@@ -757,21 +768,37 @@ function ProcessingJobsScreen() {
                       <td className="px-5 py-4 text-xs text-slate-400 whitespace-nowrap">{formatDateTime(j.startedAt)}</td>
                       <td className="px-5 py-4 text-xs text-slate-400 whitespace-nowrap">{j.duration}</td>
                       <td className="px-5 py-4">
-                        {j.status === "failed" && (
-                          /cuda out of memory|oom|out of memory/i.test(j.error ?? "") ? (
-                            <span className="text-xs text-amber-600 font-medium">Adjust model / device</span>
-                          ) : (
-                            <Button size="sm" variant="secondary" disabled={retryingIds.has(j.id)} onClick={async () => {
-                              setRetryingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
-                              try { await api.jobs.retry(j.id); toast.success("Retrying"); refetch(); }
-                              catch (e) { toast.error(`Retry failed: ${e instanceof Error ? e.message : "Request failed"}`); }
-                              finally { setRetryingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
-                            }}>
-                              <RotateCcw className="size-3" /> {retryingIds.has(j.id) ? "Retrying…" : "Retry"}
-                            </Button>
-                          )
-                        )}
-                        {j.artifactPath && <p className="text-xs text-blue-500 font-mono truncate max-w-[120px]">{j.artifactPath.split("/").pop()}</p>}
+                        <div className="flex items-center gap-1.5">
+                          {j.status === "failed" && (
+                            /cuda out of memory|oom|out of memory/i.test(j.error ?? "") ? (
+                              <span className="text-xs text-amber-600 font-medium">Adjust model / device</span>
+                            ) : (
+                              <Button size="sm" variant="secondary" disabled={retryingIds.has(j.id)} onClick={async () => {
+                                setRetryingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
+                                try { await api.jobs.retry(j.id); toast.success("Retrying"); refetch(); }
+                                catch (e) { toast.error(`Retry failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+                                finally { setRetryingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
+                              }}>
+                                <RotateCcw className="size-3" /> {retryingIds.has(j.id) ? "Retrying…" : "Retry"}
+                              </Button>
+                            )
+                          )}
+                          {(j.status === "completed" || j.status === "done" || j.status === "failed") && (
+                            <button
+                              disabled={deletingIds.has(j.id)}
+                              onClick={async () => {
+                                setDeletingIds((s) => { const n = new Set(s); n.add(j.id); return n; });
+                                try { await api.jobs.delete(j.id); toast.success("Job deleted"); refetch(); }
+                                catch (e) { toast.error(`Delete failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+                                finally { setDeletingIds((s) => { const n = new Set(s); n.delete(j.id); return n; }); }
+                              }}
+                              className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors disabled:opacity-40"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          )}
+                          {j.artifactPath && <p className="text-xs text-blue-500 font-mono truncate max-w-[120px]">{j.artifactPath.split("/").pop()}</p>}
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -890,7 +917,7 @@ function KnowledgeReviewScreen() {
               <div className="xl:col-span-2 space-y-4">
                 <Card className="p-5">
                   <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-3">Note Preview</p>
-                  <div dangerouslySetInnerHTML={{ __html: renderMarkdown(selected.content) }} />
+                  <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderMarkdown(selected.content)) }} />
                 </Card>
 
                 <Card className="p-4">
@@ -1050,7 +1077,7 @@ function VaultBrowserScreen() {
               </Card>
 
               <Card className="p-5">
-                <div dangerouslySetInnerHTML={{ __html: renderMarkdown(fileData.content) }} />
+                <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(renderMarkdown(fileData.content)) }} />
               </Card>
             </div>
 

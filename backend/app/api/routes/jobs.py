@@ -3,6 +3,7 @@ from typing import Any
 
 import asyncpg
 from fastapi import APIRouter, Depends
+from fastapi.responses import Response
 
 from app.api.deps import get_current_user, get_db
 
@@ -52,6 +53,24 @@ async def list_jobs(
         }
         for r in rows
     ]
+
+
+@router.delete("/{job_id}")
+async def delete_job(
+    job_id: str,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+) -> Response:
+    user_id = current_user["sub"]
+    try:
+        jid, uid = uuid.UUID(job_id), uuid.UUID(user_id)
+    except ValueError:
+        return Response(status_code=204)
+    await db.execute(
+        "DELETE FROM jobs WHERE id=$1 AND user_id=$2 AND status IN ('completed','failed')",
+        jid, uid,
+    )
+    return Response(status_code=204)
 
 
 @router.post("/{job_id}/cancel")

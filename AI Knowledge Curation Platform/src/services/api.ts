@@ -101,6 +101,7 @@ export const api = {
     list: () => GET<Source[]>("/api/sources", seedSources),
     add: (payload: Partial<Source>) => POST<Source>("/api/sources", payload),
     delete: (id: string) => DELETE_REQ(`/api/sources/${id}`),
+    reset: (id: string) => PATCH(`/api/sources/${id}/reset`, {}),
   },
   candidates: {
     list: () => GET<Candidate[]>("/api/candidates", seedCandidates),
@@ -119,6 +120,7 @@ export const api = {
     list: () => GET<Job[]>("/api/jobs", seedJobs),
     retry: (id: string) => POST(`/api/jobs/${id}/retry`),
     cancel: (id: string) => POST(`/api/jobs/${id}/cancel`),
+    delete: (id: string) => DELETE_REQ(`/api/jobs/${id}`),
   },
   notes: {
     list: () => GET<Note[]>("/api/notes", seedNotes),
