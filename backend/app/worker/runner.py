@@ -92,7 +92,7 @@ async def _run_job(pool: Any, job: dict[str, Any]) -> None:
     try:
         if handler is None:
             raise RuntimeError(f"No handler registered for job type {job['type']!r}")
-        result = await handler(job, progress)
+        result = await handler(job, progress, pool)
         async with pool.acquire() as conn:
             done = await conn.execute(
                 """UPDATE jobs

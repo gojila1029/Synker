@@ -180,40 +180,20 @@ AI judgment is advisory for destructive or irreversible actions. It does not ove
 - Do not add broad source scraping or automation that violates applicable access restrictions.
 - Avoid unrelated refactors and preserve user changes already present in the repository.
 
-## Follow-Up Action Gate
-
-`follow-up.md` at the repository root is the mandatory action-tracking file for this project.
-
-**Before modifying or creating any source file:**
-
-1. Read `follow-up.md` in full.
-2. Identify any open or in-progress item related to the planned change.
-3. Set that item's Status to `in-progress` and record the date in Notes before touching any code.
-
-**After completing the work:**
-
-4. Set the item's Status to `done` and write a one-sentence resolution summary in Notes.
-5. If the work uncovered a new issue not already listed, add a row before closing the session.
-6. Commit `follow-up.md` in the same commit as the code change — never as a separate cleanup commit.
-
-Never leave Status as `in-progress` across sessions without a handoff note. Never close an item without a resolution summary.
-
 ## Working Procedure
 
 For each implementation task:
 
-1. Read `follow-up.md` and set the relevant item to `in-progress` (Follow-Up Action Gate above).
-2. Inspect the current repository, relevant configuration, existing instructions, and representative tests or fixtures.
-3. Confirm the task is consistent with the approved interview decisions. Ask only about decisions that materially change scope, safety, cost, or user experience.
-4. State a concise plan for non-trivial work.
-5. Implement the smallest complete change using existing project patterns.
-6. Add or update tests proportional to the behavior and risk.
-7. Run the repository's verified format, lint, type-check, test, and relevant integration commands.
-8. Exercise the affected pipeline with controlled fixtures and a temporary test vault, never a real vault by default.
-9. Review changes for vault containment, provenance, approval enforcement, idempotency, and data-loss risks.
-10. If source code was created, modified, renamed, or removed, update the affected project representation through the installed Graphify plugin and verify its reported result.
-11. Set the `follow-up.md` item to `done` with a resolution summary and commit it alongside the code change.
-12. Report what changed, commands run, results, Graphify synchronization status, remaining risks, and any manual verification needed.
+1. Inspect the current repository, relevant configuration, existing instructions, and representative tests or fixtures.
+2. Confirm the task is consistent with the approved interview decisions. Ask only about decisions that materially change scope, safety, cost, or user experience.
+3. State a concise plan for non-trivial work.
+4. Implement the smallest complete change using existing project patterns.
+5. Add or update tests proportional to the behavior and risk.
+6. Run the repository's verified format, lint, type-check, test, and relevant integration commands.
+7. Exercise the affected pipeline with controlled fixtures and a temporary test vault, never a real vault by default.
+8. Review changes for vault containment, provenance, approval enforcement, idempotency, and data-loss risks.
+9. If source code was created, modified, renamed, or removed, update the affected project representation through the installed Graphify plugin and verify its reported result.
+10. Report what changed, commands run, results, Graphify synchronization status, remaining risks, and any manual verification needed.
 
 ## Verification
 

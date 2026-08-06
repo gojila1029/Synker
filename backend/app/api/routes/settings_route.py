@@ -9,6 +9,16 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.api.deps import get_current_user, get_db
+from app.schemas.settings import (
+    AIProvidersSettingsRead,
+    CleanupSettings,
+    DiscoverySettings,
+    NotificationsSettings,
+    PrivacySettings,
+    SettingsRead,
+    TeamSettings,
+    VaultSettings,
+)
 
 
 def _encrypt_field(plaintext: str) -> str:
@@ -22,16 +32,6 @@ def _encrypt_field(plaintext: str) -> str:
     nonce = os.urandom(12)
     ct = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
     return base64.b64encode(nonce + ct).decode("utf-8")
-from app.schemas.settings import (
-    AIProvidersSettingsRead,
-    CleanupSettings,
-    DiscoverySettings,
-    NotificationsSettings,
-    PrivacySettings,
-    SettingsRead,
-    TeamSettings,
-    VaultSettings,
-)
 
 router = APIRouter()
 
