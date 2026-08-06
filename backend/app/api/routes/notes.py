@@ -77,6 +77,13 @@ async def approve_note(
             status_code=status.HTTP_409_CONFLICT,
             detail="Note is not pending — it may already be accepted or rejected",
         )
+
+    await db.execute(
+        """INSERT INTO jobs (user_id, source_title, type)
+           SELECT $1, title, 'Graphify Sync' FROM notes WHERE id=$2""",
+        uid,
+        nid,
+    )
     return {"approved": note_id}
 
 

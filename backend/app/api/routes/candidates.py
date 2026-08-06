@@ -73,6 +73,15 @@ async def approve_candidates(
             uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
         )
         affected = int(status.split()[-1])
+
+        # Queue Note Gen jobs for approved candidates
+        for cid in ids:
+            await db.execute(
+                """INSERT INTO jobs (user_id, candidate_id, source_title, type)
+                   SELECT $1, $2, title, 'Note Gen' FROM candidates WHERE id=$2""",
+                uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
+                cid,
+            )
     return {"approved": raw_ids, "affected": affected}
 
 
