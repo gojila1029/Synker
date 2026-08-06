@@ -32,6 +32,9 @@ async def get_pool() -> asyncpg.Pool:  # type: ignore[type-arg]
             dsn,
             statement_cache_size=0,
             init=_init_conn,
+            min_size=2,
+            max_size=10,
+            command_timeout=30,
         )
     return _pool
 

@@ -165,6 +165,17 @@ async def _generate_with_claude(
                 error="Note generation failed. Check Settings > AI Providers.",
             )
 
+        if not response_dict.get("title") or not response_dict.get("content"):
+            return NoteResult(
+                title=title,
+                content="",
+                frontmatter={},
+                citations=[],
+                wiki_links=[],
+                quality_score=0.0,
+                error="AI returned incomplete response — missing title or content",
+            )
+
         note_title = response_dict.get("title", title)
         content = response_dict.get("content", "")
         citations = response_dict.get("citations", [])
@@ -241,6 +252,17 @@ async def _generate_with_openai(
                 content="",
                 frontmatter=_build_frontmatter(title, source_url, source_type),
                 error="Note generation failed. Check Settings > AI Providers.",
+            )
+
+        if not response_dict.get("title") or not response_dict.get("content"):
+            return NoteResult(
+                title=title,
+                content="",
+                frontmatter={},
+                citations=[],
+                wiki_links=[],
+                quality_score=0.0,
+                error="AI returned incomplete response — missing title or content",
             )
 
         note_title = response_dict.get("title", title)

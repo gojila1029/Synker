@@ -227,7 +227,7 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             ai_settings = ai_row["ai_providers"] if ai_row else {}
 
             existing_rows = await conn.fetch(
-                "SELECT title FROM notes WHERE user_id=$1 ORDER BY generated_at DESC LIMIT 100",
+                "SELECT title FROM notes WHERE user_id=$1 AND status='approved' ORDER BY generated_at DESC LIMIT 100",
                 user_id,
             )
 
@@ -415,31 +415,18 @@ async def _graphify_sync_handler(job: dict[str, Any], progress: ProgressFn, pool
                     full_path.write_text(markdown, encoding="utf-8")
 
                 async with pool.acquire() as conn:
-                    try:
-                        await conn.execute(
-                            """INSERT INTO vault_files
-                               (user_id, path, content, frontmatter, word_count, cloud_safe)
-                               VALUES ($1, $2, $3, $4, $5, $6)""",
-                            user_id,
-                            file_path,
-                            markdown,
-                            frontmatter_dict,
-                            len(note["content"].split()),
-                            True,
-                        )
-                    except asyncpg.exceptions.UndefinedColumnError:
-                        try:
-                            await conn.execute(
-                                """INSERT INTO vault_files
-                                   (user_id, path, word_count, cloud_safe)
-                                   VALUES ($1, $2, $3, $4)""",
-                                user_id,
-                                file_path,
-                                len(note["content"].split()),
-                                True,
-                            )
-                        except Exception:
-                            pass
+                    await conn.execute(
+                        """INSERT INTO vault_files
+                           (user_id, path, content, frontmatter, word_count, cloud_safe)
+                           VALUES ($1, $2, $3, $4, $5, true)
+                           ON CONFLICT (user_id, path) DO UPDATE
+                           SET content=$3, frontmatter=$4, word_count=$5, last_modified=now()""",
+                        user_id,
+                        file_path,
+                        note["content"] or "",
+                        frontmatter_dict,
+                        len((note["content"] or "").split()),
+                    )
 
                 async with pool.acquire() as conn:
                     await conn.execute(
