@@ -38,7 +38,7 @@ async def _claim_one(conn: Any, worker_id: str) -> dict[str, Any] | None:
               FOR UPDATE SKIP LOCKED
               LIMIT 1
          )
-        RETURNING id, user_id, type, source_title
+        RETURNING id, user_id, type, source_title, candidate_id
         """,
         worker_id,
     )

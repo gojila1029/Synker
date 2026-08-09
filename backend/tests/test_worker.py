@@ -108,3 +108,27 @@ async def test_discovery_handler_is_honest(monkeypatch):
 @pytest.mark.parametrize("tag,expected", [("UPDATE 1", True), ("UPDATE 0", False), (None, True)])
 def test_affected(tag, expected):
     assert runner._affected(tag) is expected
+
+
+async def test_claim_one_returning_clause_includes_candidate_id():
+    """ERR-001 regression: _claim_one RETURNING must include candidate_id.
+
+    Without candidate_id, _note_gen_handler receives job.get('candidate_id') == None
+    and silently completes the job without writing any note.
+    RED before fix: assertion fails (candidate_id absent from RETURNING).
+    GREEN after fix: assertion passes.
+    """
+
+    class _SQLCapture:
+        last_sql: str = ""
+
+        async def fetchrow(self, sql: str, *args: object) -> None:
+            _SQLCapture.last_sql = sql
+            return None
+
+    await runner._claim_one(_SQLCapture(), "worker-test")
+    returning_part = _SQLCapture.last_sql.upper().split("RETURNING", 1)[-1]
+    assert "CANDIDATE_ID" in returning_part, (
+        "ERR-001: candidate_id missing from _claim_one RETURNING clause; "
+        "Note Gen jobs silently complete without generating a note"
+    )
