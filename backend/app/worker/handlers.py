@@ -127,6 +127,13 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             except Exception:
                 pass
 
+        async with pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE sources SET status='done' WHERE id=ANY($1) AND user_id=$2",
+                [s["id"] for s in sources],
+                user_id,
+            )
+
         await progress(100)
         return f"{created} candidate(s) created from {total} source(s)"
     except Exception as e:
@@ -277,11 +284,20 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
         await progress(85)
 
         async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM notes WHERE candidate_id=$1",
+                candidate_id,
+            )
+            if existing:
+                await progress(100)
+                return f"Note already exists for candidate {candidate_id} — skipping duplicate"
+
             await conn.execute(
                 """INSERT INTO notes
                    (user_id, title, source, ai_action, quality_score, has_duplicate,
-                    content, frontmatter, citations, wiki_links, similarity_reasoning, status)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
+                    content, frontmatter, citations, wiki_links, similarity_reasoning, status,
+                    candidate_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)""",
                 user_id,
                 note_result.title,
                 source_url,
@@ -294,6 +310,7 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                 note_result.wiki_links,
                 note_result.similarity_reasoning,
                 "pending",
+                candidate_id,
             )
 
         await progress(100)
