@@ -194,9 +194,22 @@ function DashboardScreen() {
 
   const [syncStatus, setSyncStatus] = useState<{ last_run_at: string | null; next_run_at: string | null; is_running: boolean }>({ last_run_at: null, next_run_at: null, is_running: false });
   useEffect(() => {
-    api.scheduler.status().then(setSyncStatus);
-    const id = setInterval(() => api.scheduler.status().then(setSyncStatus), 30000);
-    return () => clearInterval(id);
+    const poll = () => {
+      if (document.visibilityState === "visible") {
+        api.scheduler.status().then(setSyncStatus);
+      }
+    };
+
+    poll();
+    const jitter = Math.random() * 10000;
+    const id = setInterval(poll, 30000 + jitter);
+    const onVisibility = () => { if (document.visibilityState === "visible") poll(); };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   const [triggering, setTriggering] = useState(false);
@@ -1469,6 +1482,12 @@ export default function App() {
 
       {/* Main */}
       <main className={`flex-1 min-w-0 ${splitScreen ? "flex flex-col overflow-hidden" : "overflow-y-auto"}`}>
+        {demo && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-2 text-sm text-amber-800 shrink-0">
+            <WifiOff className="size-4 shrink-0" />
+            Backend unavailable — showing cached preview. Changes disabled.
+          </div>
+        )}
         {active === "dashboard"  && <DashboardScreen />}
         {active === "sources"    && <SourcesScreen />}
         {active === "candidates" && <CandidateApprovalScreen />}
