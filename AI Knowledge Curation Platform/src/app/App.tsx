@@ -175,11 +175,13 @@ function formatDateTime(ts: string): string {
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function DashboardScreen() {
+function DashboardScreen({ onNavigateToSources }: { onNavigateToSources: () => void }) {
   const { data: stats, loading: statsLoading, refetch: refetchStats } = useApi(api.dashboard.getStats);
   const { data: activity, loading: actLoading } = useApi(api.dashboard.getActivity);
   const { data: candidates } = useApi(api.candidates.list);
   const { data: jobs } = useApi(api.jobs.list);
+  const { data: sources } = useApi(api.sources.list);
+  const hasNoSources = sources !== null && sources.length === 0;
 
   const pipeline = ["discover", "analyze", "approve", "extract", "transcribe", "generate", "verify", "graphify", "cleanup"];
   const pipelineLabels: Record<string, string> = { discover: "Discover", analyze: "Analyze", approve: "Approve", extract: "Extract", transcribe: "Transcribe", generate: "Generate", verify: "Verify", graphify: "Graphify", cleanup: "Cleanup" };
@@ -216,6 +218,10 @@ function DashboardScreen() {
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
   async function handleTrigger() {
     if (triggering) return;
+    if (hasNoSources) {
+      onNavigateToSources();
+      return;
+    }
     setTriggering(true);
     try { await api.scheduler.trigger(); toast.success("Discovery run triggered"); refetchStats(); }
     catch (e) { toast.error(`Failed to trigger run: ${e instanceof Error ? e.message : "Request failed"}`); }
@@ -245,15 +251,17 @@ function DashboardScreen() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Good morning 👋</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            {syncStatus.is_running
-              ? "Discovery running now..."
-              : syncStatus.last_run_at
-                ? `Last sync ran ${timeAgo(syncStatus.last_run_at)}${syncStatus.next_run_at ? ` · Next in ${timeUntil(syncStatus.next_run_at)}` : ""}`
-                : "No sync runs yet"}
+            {hasNoSources
+              ? "No sources yet — add one to get started"
+              : syncStatus.is_running
+                ? "Discovery running now..."
+                : syncStatus.last_run_at
+                  ? `Last sync ran ${timeAgo(syncStatus.last_run_at)}${syncStatus.next_run_at ? ` · Next in ${timeUntil(syncStatus.next_run_at)}` : ""}`
+                  : "No sync runs yet"}
           </p>
         </div>
         <Button onClick={handleTrigger} variant="primary" disabled={triggering}>
-          <Play className="size-4" />{triggering ? "Running…" : "Run Discovery Now"}
+          <Play className="size-4" />{triggering ? "Running…" : hasNoSources ? "Add a Source" : "Run Discovery Now"}
         </Button>
       </div>
 
@@ -1488,7 +1496,7 @@ export default function App() {
             Backend unavailable — showing cached preview. Changes disabled.
           </div>
         )}
-        {active === "dashboard"  && <DashboardScreen />}
+        {active === "dashboard"  && <DashboardScreen onNavigateToSources={() => setActive("sources")} />}
         {active === "sources"    && <SourcesScreen />}
         {active === "candidates" && <CandidateApprovalScreen />}
         {active === "jobs"       && <ProcessingJobsScreen />}
