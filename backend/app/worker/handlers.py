@@ -525,16 +525,6 @@ async def _cleanup_handler(job: dict[str, Any], progress: ProgressFn, pool: Any)
                         source_path = Path(source_url)
                         if source_path.exists() and source_path.is_file():
                             source_path.unlink()
-                            async with pool.acquire() as conn:
-                                await conn.execute(
-                                    """INSERT INTO processing_log
-                                       (user_id, job_type, status, details)
-                                       VALUES ($1, $2, $3, $4)""",
-                                    user_id,
-                                    "Cleanup",
-                                    "deleted",
-                                    f"Deleted source file: {source_url}",
-                                )
                             processed += 1
                     except Exception:
                         pass

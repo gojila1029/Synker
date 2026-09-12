@@ -6,12 +6,20 @@ from app.worker import handlers, runner
 
 
 class FakeConn:
-    def __init__(self, fetchrow_result=None):
+    def __init__(self, fetchrow_result=None, fetch_result=None, fetchval_result=None):
         self._fetchrow_result = fetchrow_result
+        self._fetch_result = fetch_result if fetch_result is not None else []
+        self._fetchval_result = fetchval_result
         self.executed: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        return self._fetch_result
 
     async def fetchrow(self, sql, *args):
         return self._fetchrow_result
+
+    async def fetchval(self, sql, *args):
+        return self._fetchval_result
 
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
@@ -53,7 +61,7 @@ async def test_claim_one_returns_none_when_queue_empty():
 
 
 async def test_run_job_completes_and_logs(monkeypatch):
-    async def _fast_handler(job, progress):
+    async def _fast_handler(job, progress, pool):
         await progress(50)
         return "done"
 
@@ -91,18 +99,19 @@ async def test_reap_stale_issues_update():
     assert "make_interval" in sql
 
 
-async def test_discovery_handler_is_honest(monkeypatch):
-    monkeypatch.setattr(handlers, "STEP_DELAY_SECONDS", 0)
+async def test_analysis_handler_with_no_sources():
     seen: list[int] = []
 
     async def _progress(pct):
         seen.append(pct)
 
-    result = await handlers._discovery_handler({"type": "Analysis"}, _progress)
+    import uuid as _uuid
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    pool = FakePool(FakeConn())  # fetch returns [] — no sources
+    result = await handlers._analysis_handler({"user_id": user_id}, _progress, pool)
 
-    assert seen == [20, 60, 90]
-    assert "0 new candidates" in result
-    assert "no source adapters" in result
+    assert 100 in seen
+    assert "0 candidates" in result
 
 
 @pytest.mark.parametrize("tag,expected", [("UPDATE 1", True), ("UPDATE 0", False), (None, True)])
