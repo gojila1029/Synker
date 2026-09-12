@@ -7,6 +7,17 @@ import { supabase } from "@/lib/supabase";
 
 export const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
 
+function httpErrorMessage(status: number, text: string): string {
+  if (text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed?.detail === "string") return parsed.detail;
+    } catch {}
+    return `HTTP ${status}: ${text.slice(0, 120)}`;
+  }
+  return `HTTP ${status}`;
+}
+
 export class UnauthorizedError extends Error {
   constructor() { super("Session expired — please sign in again"); }
 }
@@ -49,7 +60,7 @@ async function POST<T = void>(path: string, body?: unknown): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
+    throw new Error(httpErrorMessage(res.status, text));
   }
   _isDemo = false;
   const text = await res.text();
@@ -66,7 +77,7 @@ async function PATCH<T = void>(path: string, body: unknown): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
+    throw new Error(httpErrorMessage(res.status, text));
   }
   _isDemo = false;
   const text = await res.text();
@@ -82,7 +93,7 @@ async function DELETE_REQ(path: string): Promise<void> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
+    throw new Error(httpErrorMessage(res.status, text));
   }
   _isDemo = false;
 }
