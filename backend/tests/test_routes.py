@@ -102,9 +102,19 @@ async def test_patch_settings_section_returns_200(authed_client):
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
-async def test_post_scheduler_trigger_returns_200(authed_client):
+async def test_post_scheduler_trigger_returns_400_when_no_sources(authed_client):
+    """Guard: trigger must return 400 with a clear message when user has no sources."""
     response = await authed_client.post("/api/scheduler/trigger")
+    assert response.status_code == 400
+    assert "No sources" in response.json()["detail"]
+
+
+async def test_post_scheduler_trigger_returns_200_when_source_exists(authed_client_with_source):
+    """Trigger returns 200 and a jobId when the user has at least one source."""
+    response = await authed_client_with_source.post("/api/scheduler/trigger")
     assert response.status_code == 200
+    assert response.json()["triggered"] is True
+    assert response.json()["jobId"] is not None
 
 
 # ── Auth guard ────────────────────────────────────────────────────────────────
