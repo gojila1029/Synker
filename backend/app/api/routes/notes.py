@@ -48,6 +48,8 @@ async def list_notes(
             "id": str(r["id"]),
             "title": r["title"],
             "source": r["source"],
+            "topicId": str(r["topic_id"]) if r["topic_id"] else None,
+            "sourceId": str(r["source_id"]) if r["source_id"] else None,
             "generatedAt": r["generated_at"].isoformat() if r["generated_at"] else None,
             "aiAction": r["ai_action"],
             "qualityScore": r["quality_score"],

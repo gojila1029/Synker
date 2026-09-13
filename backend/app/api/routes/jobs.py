@@ -33,7 +33,7 @@ async def list_jobs(
     except ValueError:
         return []
     rows = await db.fetch(
-        """SELECT id, source_title, type, status, progress, error,
+        """SELECT id, source_title, type, status, progress, error, error_code,
                   artifact_path, started_at, finished_at
            FROM jobs WHERE user_id=$1 ORDER BY started_at DESC LIMIT 100""",
         uid,
@@ -46,6 +46,7 @@ async def list_jobs(
             "status": r["status"],
             "progress": r["progress"],
             "error": r["error"],
+            "errorCode": r["error_code"],
             "artifactPath": r["artifact_path"],
             "startedAt": r["started_at"].isoformat() if r["started_at"] else None,
             "duration": "—" if r["status"] == "queued"

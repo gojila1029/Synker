@@ -14,6 +14,8 @@ class Note(CamelModel):
     id: str
     title: str
     source: str
+    topic_id: Optional[str] = None
+    source_id: Optional[str] = None
     generated_at: str
     ai_action: Literal["created", "merged", "updated", "skipped"]
     quality_score: float

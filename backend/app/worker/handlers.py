@@ -31,6 +31,19 @@ Handler = Callable[[dict[str, Any], ProgressFn, Any], Awaitable[str]]
 STEP_DELAY_SECONDS = 1.2
 
 
+class NoEvidenceError(Exception):
+    """Raised when a handler refuses to act because there is no valid
+    Evidence to act on (CLAUDE.md: 'No valid Evidence -> no Knowledge Note').
+    runner._run_job maps this to jobs.status='failed' with the machine
+    -readable jobs.error_code taken from .code, instead of letting it fall
+    through as a merely failure-looking string that would record the job as
+    'completed'. The message must never contain source content or URLs —
+    it becomes jobs.error, which is not access-controlled the same way
+    source_extractions is."""
+
+    code = "NO_EVIDENCE"
+
+
 def _safe_filename(title: str) -> str:
     """Convert a note title to a safe filename by replacing special characters."""
     safe = re.sub(r'[\\/:*?"<>|]', "_", title)
@@ -217,7 +230,8 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
     try:
         async with pool.acquire() as conn:
             candidate = await conn.fetchrow(
-                "SELECT title, source_info, summary FROM candidates WHERE id=$1 AND user_id=$2",
+                """SELECT title, source_info, summary, source_id, topic_id
+                   FROM candidates WHERE id=$1 AND user_id=$2""",
                 candidate_id,
                 user_id,
             )
@@ -227,6 +241,10 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             return f"Candidate {candidate_id} not found"
 
         await progress(20)
+
+        source_id = candidate["source_id"]
+        topic_id = candidate["topic_id"]
+        source_url = candidate["source_info"]
 
         async with pool.acquire() as conn:
             ai_row = await conn.fetchrow(
@@ -239,32 +257,41 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                 user_id,
             )
 
-        existing_titles = [r["title"] for r in existing_rows]
-
-        await progress(30)
-
-        source_url = candidate["source_info"]
-        async with pool.acquire() as conn:
-            source_row = await conn.fetchrow(
-                "SELECT type FROM sources WHERE url=$1 AND user_id=$2 LIMIT 1",
-                source_url,
-                user_id,
-            )
+            # Prefer the candidate's real source_id FK over re-deriving type from
+            # a URL string match, which breaks silently if a source's URL changed
+            # or two sources share a URL.
+            if source_id:
+                source_row = await conn.fetchrow(
+                    "SELECT type FROM sources WHERE id=$1 AND user_id=$2",
+                    source_id,
+                    user_id,
+                )
+            else:
+                source_row = await conn.fetchrow(
+                    "SELECT type FROM sources WHERE url=$1 AND user_id=$2 LIMIT 1",
+                    source_url,
+                    user_id,
+                )
             source_type = source_row["type"] if source_row else "web"
+
+            # No Evidence -> No Note: require a real extraction row for this
+            # source rather than falling back to the candidate's discovery blurb.
+            evidence = None
+            if source_id:
+                evidence = await conn.fetchrow(
+                    """SELECT text FROM source_extractions
+                       WHERE source_id=$1 ORDER BY extracted_at DESC LIMIT 1""",
+                    source_id,
+                )
+
+        existing_titles = [r["title"] for r in existing_rows]
 
         await progress(40)
 
-        extracted = None
-        try:
-            extracted = await adapter_extract(source_type, source_url)
-        except Exception:
-            pass
+        if not evidence or not evidence["text"]:
+            raise NoEvidenceError("Source has not been extracted yet")
 
-        text = ""
-        if extracted and extracted.text:
-            text = extracted.text
-        elif candidate["summary"]:
-            text = candidate["summary"]
+        text = evidence["text"]
 
         await progress(60)
 
@@ -294,13 +321,15 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
 
             await conn.execute(
                 """INSERT INTO notes
-                   (user_id, title, source, ai_action, quality_score, has_duplicate,
-                    content, frontmatter, citations, wiki_links, similarity_reasoning, status,
-                    candidate_id)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)""",
+                   (user_id, title, source, topic_id, source_id, ai_action, quality_score,
+                    has_duplicate, content, frontmatter, citations, wiki_links,
+                    similarity_reasoning, status, candidate_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)""",
                 user_id,
                 note_result.title,
                 source_url,
+                topic_id,
+                source_id,
                 note_result.ai_action,
                 note_result.quality_score,
                 False,
@@ -315,6 +344,11 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
 
         await progress(100)
         return f"Note '{note_result.title}' generated (quality: {note_result.quality_score:.2f})"
+    except NoEvidenceError:
+        # A real failure, not a completed-with-a-bad-outcome job. Let it
+        # propagate to runner._run_job, which marks status='failed' and
+        # persists .code as jobs.error_code.
+        raise
     except Exception as e:
         await progress(100)
         return f"Note generation handler failed: {str(e)[:100]}"

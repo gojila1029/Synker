@@ -17,6 +17,7 @@ class Candidate(CamelModel):
     domain: str
     published_at: str
     topic_id: Optional[str] = None
+    source_id: Optional[str] = None
     recommendation: Literal["process", "merge", "skip", "review"]
     quality_score: float
     confidence_score: float

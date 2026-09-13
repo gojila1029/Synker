@@ -28,7 +28,7 @@ async def list_candidates(
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
-        """SELECT id, title, source_info, domain, published_at, topic_id,
+        """SELECT id, title, source_info, domain, published_at, topic_id, source_id,
                   recommendation, quality_score, confidence_score, duplicate_score,
                   expected_notes, estimated_tokens, summary, extracted_topics, status
            FROM candidates WHERE user_id=$1 ORDER BY created_at DESC""",
@@ -42,6 +42,7 @@ async def list_candidates(
             "domain": r["domain"],
             "publishedAt": r["published_at"].isoformat() if r["published_at"] else None,
             "topicId": str(r["topic_id"]) if r["topic_id"] else None,
+            "sourceId": str(r["source_id"]) if r["source_id"] else None,
             "recommendation": r["recommendation"],
             "qualityScore": r["quality_score"],
             "confidenceScore": r["confidence_score"],

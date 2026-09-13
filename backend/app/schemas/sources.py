@@ -13,6 +13,7 @@ class CamelModel(BaseModel):
 class Source(CamelModel):
     id: str
     type: Literal["youtube", "web", "pdf", "local"]
+    source_scope: Literal["direct_resource", "discovery_provider"] = "direct_resource"
     title: str
     url: str
     topic_id: Optional[str] = None
@@ -23,6 +24,7 @@ class Source(CamelModel):
 
 class SourceCreate(CamelModel):
     type: Literal["youtube", "web", "pdf", "local"] = "web"
+    source_scope: Literal["direct_resource", "discovery_provider"] = "direct_resource"
     title: str = ""
     url: str = ""
     topic_id: Optional[str] = None

@@ -107,15 +107,20 @@ async def _run_job(pool: Any, job: dict[str, Any]) -> None:
         _log.info("Job %s completed: %s", job_id, result)
     except Exception as exc:  # noqa: BLE001 — any handler failure is a job failure
         _log.exception("Job %s failed", job_id)
+        # Handlers that need a machine-readable failure reason (e.g.
+        # NoEvidenceError) set a .code attribute; anything else leaves it
+        # NULL rather than guessing a code from the message text.
+        error_code = getattr(exc, "code", None)
         async with pool.acquire() as conn:
             failed = await conn.execute(
                 """UPDATE jobs
-                      SET status='failed', error=$2, finished_at=now(),
+                      SET status='failed', error=$2, error_code=$3, finished_at=now(),
                           heartbeat_at=now(),
                           duration_seconds=EXTRACT(EPOCH FROM now()-started_at)::int
                     WHERE id=$1 AND status='running'""",
                 job_id,
                 str(exc)[:500],
+                error_code,
             )
             if _affected(failed):
                 await _log_event(conn, job, "failed", str(exc)[:200])

@@ -1,7 +1,5 @@
-﻿import asyncio
-import base64
+﻿import base64
 import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import asyncpg
@@ -129,26 +127,24 @@ async def update_settings(
     return {"section": section, "updated": True}
 
 
-def _open_directory_dialog() -> str:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes("-topmost", 1)
-        path = filedialog.askdirectory(title="Select Obsidian Vault Folder")
-        root.destroy()
-        return path or ""
-    except Exception:
-        return ""
-
-
 @router.get("/browse-directory")
 async def browse_directory(
     _current_user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, str]:
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        path = await loop.run_in_executor(pool, _open_directory_dialog)
-    return {"path": path}
+) -> dict[str, Any]:
+    """Deprecated: this backend runs on Railway, a headless container with no
+    local display and no access to any user's filesystem — a server-side
+    tkinter dialog here can never open on the user's screen. It used to
+    silently return {"path": ""} on every call, which looked identical to "no
+    folder chosen." Real folder selection now happens in the Local Sync
+    Bridge (bridge/), which runs on the user's own machine where a display
+    and filesystem actually exist. See CLAUDE.md "Obsidian vault safety."
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "This endpoint is deprecated. Folder selection now happens in the "
+            "Local Sync Bridge, which runs on your own machine. See the "
+            "Synker Local Sync Bridge setup docs."
+        ),
+    )
 

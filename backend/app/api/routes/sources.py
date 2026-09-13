@@ -20,7 +20,7 @@ async def list_sources(
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
-        """SELECT id, type, title, url, topic_id, status, schedule, added_at
+        """SELECT id, type, source_scope, title, url, topic_id, status, schedule, added_at
            FROM sources WHERE user_id=$1 ORDER BY added_at DESC""",
         uuid.UUID(user_id),
     )
@@ -28,6 +28,7 @@ async def list_sources(
         {
             "id": str(r["id"]),
             "type": r["type"],
+            "sourceScope": r["source_scope"],
             "title": r["title"],
             "url": r["url"],
             "topicId": str(r["topic_id"]) if r["topic_id"] else None,
@@ -48,23 +49,25 @@ async def add_source(
     user_id = current_user["sub"]
     topic_id = body.topic_id
     row = await db.fetchrow(
-        """INSERT INTO sources (user_id, topic_id, type, title, url, schedule)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           RETURNING id, type, title, url, topic_id, status, schedule, added_at""",
+        """INSERT INTO sources (user_id, topic_id, type, source_scope, title, url, schedule)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           RETURNING id, type, source_scope, title, url, topic_id, status, schedule, added_at""",
         uuid.UUID(user_id),
         uuid.UUID(topic_id) if topic_id else None,
         body.type,
+        body.source_scope,
         body.title,
         body.url,
         None,
     )
     if row is None:
-        return {"id": "", "type": body.type, "title": body.title,
-                "url": body.url, "topicId": topic_id, "status": "queued",
-                "addedAt": None, "schedule": None}
+        return {"id": "", "type": body.type, "sourceScope": body.source_scope,
+                "title": body.title, "url": body.url, "topicId": topic_id,
+                "status": "queued", "addedAt": None, "schedule": None}
     return {
         "id": str(row["id"]),
         "type": row["type"],
+        "sourceScope": row["source_scope"],
         "title": row["title"],
         "url": row["url"],
         "topicId": str(row["topic_id"]) if row["topic_id"] else None,
