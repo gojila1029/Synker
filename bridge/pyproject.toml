@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "synker-bridge"
+version = "0.1.0"
+description = "Synker Local Sync Bridge — runs on the user's machine, mirrors approved notes into a real Obsidian vault folder"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.0",
+    "keyring>=25.0",
+]
+
+[project.scripts]
+synker-bridge = "synker_bridge.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "ruff>=0.9.0",
+    "mypy>=1.13.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
