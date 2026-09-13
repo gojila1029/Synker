@@ -6,6 +6,7 @@ auth path on the backend side.
 from __future__ import annotations
 
 from typing import Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -38,7 +39,11 @@ async def fetch_pending(
     client: HttpClient = http_client or httpx.AsyncClient(timeout=30.0)
     url = f"{api_base}/api/vault/pending-sync"
     if updated_since:
-        url += f"?updatedSince={updated_since}"
+        # quote() with safe="" so a raw '+' (UTC offset, e.g. +00:00) is
+        # percent-encoded — an unescaped '+' in a query string decodes as a
+        # space server-side, corrupting the timestamp (caught via a live
+        # round-trip test, not the fake-client unit tests).
+        url += f"?updatedSince={quote(updated_since, safe='')}"
     try:
         try:
             response = await client.get(url, headers=_auth_headers(access_token))

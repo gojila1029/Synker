@@ -64,13 +64,16 @@ async def test_fetch_pending_returns_parsed_files():
 
 @pytest.mark.asyncio
 async def test_fetch_pending_sends_updated_since_cursor_when_given():
+    from urllib.parse import parse_qs, urlsplit
+
     client = _FakeClient(_FakeResponse(200, []))
 
     await fetch_pending("https://api.example.com", "token123",
                          updated_since="2026-01-01T00:00:00+00:00", http_client=client)
 
     _, url, _, _ = client.calls[0]
-    assert "updatedSince=2026-01-01T00:00:00" in url
+    query = urlsplit(url).query
+    assert parse_qs(query)["updatedSince"][0] == "2026-01-01T00:00:00+00:00"
 
 
 @pytest.mark.asyncio
