@@ -55,16 +55,18 @@ CREATE TABLE IF NOT EXISTS public.topics (
 
 -- ── Sources ───────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.sources (
-  id          uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id     uuid        NOT NULL,
-  topic_id    uuid        REFERENCES public.topics(id) ON DELETE SET NULL,
-  type        text        NOT NULL CHECK (type IN ('youtube', 'web', 'pdf', 'local')),
-  title       text        NOT NULL DEFAULT '',
-  url         text        NOT NULL DEFAULT '',
-  status      text        NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'done', 'failed')),
-  schedule    text,
-  added_at    timestamptz NOT NULL DEFAULT now(),
-  updated_at  timestamptz NOT NULL DEFAULT now()
+  id            uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id       uuid        NOT NULL,
+  topic_id      uuid        REFERENCES public.topics(id) ON DELETE SET NULL,
+  type          text        NOT NULL CHECK (type IN ('youtube', 'web', 'pdf', 'local')),
+  source_scope  text        NOT NULL DEFAULT 'direct_resource'
+                            CHECK (source_scope IN ('direct_resource', 'discovery_provider')),
+  title         text        NOT NULL DEFAULT '',
+  url           text        NOT NULL DEFAULT '',
+  status        text        NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'processing', 'done', 'failed')),
+  schedule      text,
+  added_at      timestamptz NOT NULL DEFAULT now(),
+  updated_at    timestamptz NOT NULL DEFAULT now()
 );
 
 -- ── Source extractions (004 source_extractions, staging-adapted: no RLS,
@@ -116,6 +118,7 @@ CREATE TABLE IF NOT EXISTS public.jobs (
   status           text        NOT NULL DEFAULT 'queued' CHECK (status IN ('running','queued','completed','failed')),
   progress         int         NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
   error            text,
+  error_code       text,
   artifact_path    text,
   started_at       timestamptz NOT NULL DEFAULT now(),
   finished_at      timestamptz,
@@ -129,6 +132,8 @@ CREATE TABLE IF NOT EXISTS public.notes (
   id                   uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id              uuid        NOT NULL,
   candidate_id         uuid        REFERENCES public.candidates(id) ON DELETE SET NULL,
+  topic_id             uuid        REFERENCES public.topics(id) ON DELETE SET NULL,
+  source_id            uuid        REFERENCES public.sources(id) ON DELETE SET NULL,
   title                text        NOT NULL,
   source               text        NOT NULL DEFAULT '',
   ai_action            text        NOT NULL DEFAULT 'created' CHECK (ai_action IN ('created','merged','updated','skipped')),
