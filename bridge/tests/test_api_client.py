@@ -74,6 +74,27 @@ async def test_fetch_pending_sends_updated_since_cursor_when_given():
 
 
 @pytest.mark.asyncio
+async def test_fetch_pending_url_encodes_updated_since_plus_offset():
+    """Regression test: a raw '+' in an ISO timestamp's UTC offset (e.g.
+    '+00:00') is a reserved query-string character that decodes as a space
+    server-side unless percent-encoded. This was only caught by a real
+    round-trip against the live backend, not by _FakeClient — parse the
+    query string the same way a real HTTP server would (urllib.parse.parse_qs)
+    and confirm it comes back byte-for-byte identical to what was passed in."""
+    from urllib.parse import parse_qs, urlsplit
+
+    client = _FakeClient(_FakeResponse(200, []))
+    original = "2026-09-13T20:01:27.040127+00:00"
+
+    await fetch_pending("https://api.example.com", "token123",
+                         updated_since=original, http_client=client)
+
+    _, url, _, _ = client.calls[0]
+    query = urlsplit(url).query
+    assert parse_qs(query)["updatedSince"][0] == original
+
+
+@pytest.mark.asyncio
 async def test_fetch_pending_raises_on_401():
     client = _FakeClient(_FakeResponse(401))
 
