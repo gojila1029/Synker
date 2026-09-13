@@ -145,7 +145,6 @@ export const api = {
   settings: {
     get: () => GET<Settings>("/api/settings", seedSettings),
     update: (section: string, payload: unknown) => PATCH(`/api/settings/${section}`, payload),
-    browseDirectory: () => GET<{ path: string }>("/api/settings/browse-directory", { path: "" }),
   },
   scheduler: {
     trigger: () => POST("/api/scheduler/trigger"),

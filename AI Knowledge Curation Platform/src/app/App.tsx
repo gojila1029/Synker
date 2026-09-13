@@ -1209,7 +1209,6 @@ function SettingsScreen() {
   const [claudeKey, setClaudeKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
   const hasLoaded = useRef(false);
-  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     if (settings && !hasLoaded.current) {
@@ -1247,20 +1246,10 @@ function SettingsScreen() {
         <div><label className={labelCls}>Vault name</label><input className={inputCls} value={vault.name} onChange={(e) => setVault({ ...vault, name: e.target.value })} /></div>
         <div>
           <label className={labelCls}>Vault path</label>
-          <div className="flex gap-2">
-            <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} />
-            <Button variant="secondary" size="md" disabled={picking || !BASE.includes("localhost")} title={!BASE.includes("localhost") ? "Browse only works when running locally — type the path manually" : undefined} onClick={async () => {
-              setPicking(true);
-              try {
-                const { path } = await api.settings.browseDirectory();
-                if (path) setVault({ ...vault, path });
-              } catch {
-                toast.error("Could not open folder picker — type the path manually.");
-              } finally {
-                setPicking(false);
-              }
-            }}><FolderOpen className="size-4" /> {picking ? "Picking…" : "Browse"}</Button>
-          </div>
+          <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} placeholder="Set by the Local Sync Bridge, or type a path manually" />
+          <p className="text-xs text-slate-500 mt-1.5">
+            Folder selection happens in the Local Sync Bridge, which runs on your own machine and can open a real folder picker — this server can't. Install and run the bridge, then pick your vault folder there.
+          </p>
         </div>
       </SettingsSection>
 

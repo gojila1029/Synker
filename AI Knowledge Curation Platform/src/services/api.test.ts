@@ -287,3 +287,37 @@ describe('POST error detail extraction (SYN-trigger-400)', () => {
     await expect(api.scheduler.trigger()).rejects.toThrow('HTTP 503')
   })
 })
+
+describe('Local Sync Bridge (Stage 6 regression)', () => {
+  it('no longer exposes browseDirectory — hosted Synker cannot open a local folder dialog', async () => {
+    const { api } = await import('./api')
+    expect('browseDirectory' in api.settings).toBe(false)
+  })
+
+  it('never calls GET /api/settings/browse-directory', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+      text: () => Promise.resolve('{}'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { api } = await import('./api')
+
+    await api.settings.get()
+
+    const calledPaths = fetchMock.mock.calls.map((call) => String(call[0]))
+    expect(calledPaths.some((path) => path.includes('browse-directory'))).toBe(false)
+  })
+
+  it('settings.get() still falls back to demo data on failure, but does not fabricate a vault path', async () => {
+    // Documents existing, pre-Stage-6 behavior (SYN-008 demo-mode fallback) —
+    // not something this stage redesigns. The fallback is the app's seed
+    // data, not a fabricated "connected" state.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
+    const { api } = await import('./api')
+
+    const settings = await api.settings.get()
+
+    expect(settings.vault).toBeDefined()
+  })
+})
