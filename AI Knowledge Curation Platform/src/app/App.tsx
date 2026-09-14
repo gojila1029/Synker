@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { api, isDemoMode, BASE } from "../services/api";
+import { sourceScopeLabel } from "./sourceScopeLabel";
 import type { Topic, Source, Candidate, Job, Note, VaultNode, VaultFile } from "../types";
 import {
   seedTopics, seedSources, seedVaultTree, seedSettings,
@@ -513,6 +514,11 @@ function SourcesScreen() {
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-slate-800 line-clamp-2 leading-snug">{s.title}</p>
                   <p className="text-xs text-slate-400 mt-1 truncate">{s.url}</p>
+                  {sourceScopeLabel(s.sourceScope) && (
+                    <span className="inline-block mt-1.5 text-[11px] px-2 py-0.5 rounded-full font-medium bg-blue-50 text-blue-600">
+                      {sourceScopeLabel(s.sourceScope)}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center justify-between border-t border-slate-100 pt-2.5">
                   {topic ? (
@@ -542,6 +548,9 @@ function SourcesScreen() {
                 <label className="text-xs font-medium text-slate-600 mb-1.5 block">URL or file path</label>
                 <input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://… or /local/path"
                   className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all" />
+                {newType === "youtube" && (
+                  <p className="text-xs text-slate-400 mt-1.5">채널/재생목록 URL을 붙여넣으면 새 영상을 자동으로 찾습니다.</p>
+                )}
               </div>
               <div>
                 <label className="text-xs font-medium text-slate-600 mb-1.5 block">Source type</label>

@@ -23,6 +23,7 @@ export interface Topic {
 export interface Source {
   id: string;
   type: "youtube" | "web" | "pdf" | "local";
+  sourceScope?: "direct_resource" | "discovery_provider";
   title: string;
   url: string;
   topicId: string | null;
