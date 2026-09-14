@@ -14,8 +14,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import asyncpg.exceptions
-
 from app.adapters import extract as adapter_extract
 from app.adapters.base import ExtractedContent, ExtractionError
 from app.adapters.registry import get_adapter
@@ -51,14 +49,21 @@ def _safe_filename(title: str) -> str:
 
 
 async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any) -> str:
-    """Discovery: scan queued sources, extract metadata, create candidate records."""
+    """Discovery: scan queued sources, extract metadata, create candidate records.
+
+    A source classified as discovery_provider (a bare platform URL — see
+    app/adapters/classify.py) has no real discovery engine behind it yet, so
+    it is skipped honestly rather than run through direct extraction, which
+    would only produce a misleading "Unknown" candidate that looks like a
+    normal, healthy result."""
     user_id = job["user_id"]
     created = 0
+    skipped_discovery_ids: list[Any] = []
 
     try:
         async with pool.acquire() as conn:
             sources = await conn.fetch(
-                "SELECT id, type, title, url FROM sources WHERE user_id=$1",
+                "SELECT id, type, title, url, source_scope FROM sources WHERE user_id=$1",
                 user_id,
             )
 
@@ -74,28 +79,53 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                 source_type = source["type"] or "web"
                 source_url = source["url"]
 
+                if source["source_scope"] == "discovery_provider":
+                    skipped_discovery_ids.append(source["id"])
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """INSERT INTO processing_log
+                               (user_id, entity_type, entity_id, action, details)
+                               VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                            user_id,
+                            source["id"],
+                            json.dumps({"reason": "no discovery engine implemented yet"}),
+                        )
+                        await conn.execute(
+                            "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                            source["id"],
+                            user_id,
+                        )
+                    continue
+
                 extracted = None
                 try:
                     extracted = await adapter_extract(source_type, source_url)
-                except Exception:
-                    extracted = ExtractedContent(
-                        text="",
-                        title=source["title"] or "Unknown",
-                        error="Extraction pending",
-                    )
+                except Exception as exc:
+                    extracted = ExtractedContent(text="", title="", error=str(exc))
+
+                domain = urlparse(source_url).netloc if source_url else ""
 
                 if extracted and (extracted.error or not extracted.text):
-                    title = source["title"] or "Unknown"
-                    summary = "Extraction pending"
+                    # Honest failure: keep the real error, do not claim a
+                    # normal quality/confidence score, and fall back to the
+                    # domain (not the word "Unknown") when there's no title —
+                    # the URL/domain is real lineage, "Unknown" is not.
+                    title = source["title"] or domain or "Untitled source"
+                    summary = (extracted.error if extracted and extracted.error
+                               else "Extraction pending")
                     published_at = None
                     word_count = 0
+                    recommendation = "review"
+                    quality_score = 0.0
+                    confidence_score = 0.0
                 else:
                     title = extracted.title if extracted else source["title"]
                     summary = extracted.text[:500] if extracted and extracted.text else ""
                     published_at = extracted.published_at if extracted else None
                     word_count = extracted.word_count if extracted else 0
-
-                domain = urlparse(source_url).netloc if source_url else ""
+                    recommendation = "process"
+                    quality_score = 0.75
+                    confidence_score = 0.70
 
                 async with pool.acquire() as conn:
                     existing = await conn.fetchval(
@@ -120,9 +150,9 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                             source_url,
                             domain,
                             published_at,
-                            "process",
-                            0.75,
-                            0.70,
+                            recommendation,
+                            quality_score,
+                            confidence_score,
                             0.05,
                             1,
                             max(1000, word_count * 2),
@@ -140,12 +170,14 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             except Exception:
                 pass
 
-        async with pool.acquire() as conn:
-            await conn.execute(
-                "UPDATE sources SET status='done' WHERE id=ANY($1) AND user_id=$2",
-                [s["id"] for s in sources],
-                user_id,
-            )
+        done_ids = [s["id"] for s in sources if s["id"] not in skipped_discovery_ids]
+        if done_ids:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE sources SET status='done' WHERE id=ANY($1) AND user_id=$2",
+                    done_ids,
+                    user_id,
+                )
 
         await progress(100)
         return f"{created} candidate(s) created from {total} source(s)"

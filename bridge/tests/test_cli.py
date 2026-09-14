@@ -11,7 +11,6 @@ import pytest
 from synker_bridge import api_client, auth, cli
 from synker_bridge.config import BridgeConfig
 from synker_bridge.sync import SyncOutcome
-from synker_bridge.token_store import StoredSession
 
 
 class _FakeKeyring:

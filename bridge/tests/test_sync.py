@@ -215,14 +215,15 @@ def test_atomic_write_cleans_up_tmp_file_if_replace_fails(tmp_path, monkeypatch)
 # ── E. Deletion safety ───────────────────────────────────────────────────────
 
 def test_sync_never_deletes_local_files_not_present_in_pending_list(tmp_path):
+    original_content = "the user's own note, never synced from the server"
     untouched = tmp_path / "user-written-note.md"
-    untouched.write_text("the user's own note, never synced from the server", encoding="utf-8")
+    untouched.write_text(original_content, encoding="utf-8")
 
     state = SyncState()
     sync_all(tmp_path, [PendingFile(path="server-note.md", content="from server")], state)
 
     assert untouched.exists()
-    assert untouched.read_text(encoding="utf-8") == "the user's own note, never synced from the server"
+    assert untouched.read_text(encoding="utf-8") == original_content
 
 
 # ── F. Untrusted content ─────────────────────────────────────────────────────

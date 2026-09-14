@@ -5,6 +5,7 @@ import asyncpg
 from fastapi import APIRouter, Depends
 from fastapi.responses import Response
 
+from app.adapters.classify import classify_source_scope
 from app.api.deps import get_current_user, get_db
 from app.schemas.sources import SourceCreate
 
@@ -48,6 +49,10 @@ async def add_source(
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     topic_id = body.topic_id
+    # The client never sends a meaningful source_scope (no UI field for it),
+    # so SourceCreate's "direct_resource" default is wrong for a bare
+    # platform homepage. Classify it server-side instead of trusting body.
+    source_scope = classify_source_scope(body.type, body.url)
     row = await db.fetchrow(
         """INSERT INTO sources (user_id, topic_id, type, source_scope, title, url, schedule)
            VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -55,13 +60,13 @@ async def add_source(
         uuid.UUID(user_id),
         uuid.UUID(topic_id) if topic_id else None,
         body.type,
-        body.source_scope,
+        source_scope,
         body.title,
         body.url,
         None,
     )
     if row is None:
-        return {"id": "", "type": body.type, "sourceScope": body.source_scope,
+        return {"id": "", "type": body.type, "sourceScope": source_scope,
                 "title": body.title, "url": body.url, "topicId": topic_id,
                 "status": "queued", "addedAt": None, "schedule": None}
     return {

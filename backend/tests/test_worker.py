@@ -26,6 +26,10 @@ class FakeConn:
         return "UPDATE 1"
 
 
+async def _noop_progress(pct):
+    pass
+
+
 class FakePool:
     def __init__(self, conn):
         self._conn = conn
@@ -112,6 +116,79 @@ async def test_analysis_handler_with_no_sources():
 
     assert 100 in seen
     assert "0 candidates" in result
+
+
+async def test_analysis_handler_preserves_real_error_on_failed_extraction(monkeypatch):
+    """Stage 6 verification-loop ROOT CAUSE #1/#3: a source with no title and
+    a failed extraction must not surface as a healthy-looking "Unknown"
+    candidate with a generic "Extraction pending" summary and a normal
+    0.75/0.70 score — that misrepresents a real failure as a good result."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+
+    async def _failing_extract(source_type, url):
+        return ExtractedContent(
+            text="", title="", error=f"Cannot extract video ID from URL: {url}",
+        )
+
+    monkeypatch.setattr(handlers, "adapter_extract", _failing_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000bb")
+    source = {
+        "id": source_id, "type": "youtube", "title": "", "url": "https://www.youtube.com/",
+        "source_scope": "direct_resource",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
+    assert len(inserts) == 1
+    args = inserts[0]
+    title, summary, quality_score, confidence_score, recommendation = (
+        args[2], args[12], args[7], args[8], args[6],
+    )
+    assert title != "Unknown"
+    assert "Cannot extract video ID" in summary
+    assert quality_score == 0.0
+    assert confidence_score == 0.0
+    assert recommendation != "process"
+
+
+async def test_analysis_handler_skips_extraction_for_discovery_provider_sources(monkeypatch):
+    """A source classified as discovery_provider (e.g. a bare platform
+    homepage) has no real discovery engine behind it yet — attempting direct
+    extraction on it produces the same misleading "Unknown" candidate this
+    fix addresses. Skip it honestly instead of pretending to have looked."""
+    import uuid as _uuid
+
+    called = False
+
+    async def _should_not_be_called(source_type, url):
+        nonlocal called
+        called = True
+        raise AssertionError("adapter_extract must not be called for discovery_provider sources")
+
+    monkeypatch.setattr(handlers, "adapter_extract", _should_not_be_called)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000cc")
+    source = {
+        "id": source_id, "type": "youtube", "title": "", "url": "https://www.youtube.com/",
+        "source_scope": "discovery_provider",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    result = await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    assert called is False
+    inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
+    assert len(inserts) == 0
+    assert "0 candidate" in result
 
 
 @pytest.mark.parametrize("tag,expected", [("UPDATE 1", True), ("UPDATE 0", False), (None, True)])

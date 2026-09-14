@@ -65,6 +65,26 @@ async def test_post_source_defaults_to_direct_resource_scope(authed_client):
     assert response.json()["sourceScope"] == "direct_resource"
 
 
+async def test_post_source_classifies_youtube_homepage_as_discovery_provider(authed_client):
+    """The Add Source UI has no source_scope field — the server must infer
+    it, not blindly trust the client's "direct_resource" schema default,
+    which is wrong for a bare platform homepage (Stage 6 verification-loop
+    ROOT CAUSE #2)."""
+    response = await authed_client.post(
+        "/api/sources",
+        json={"url": "https://www.youtube.com/", "type": "youtube", "title": ""},
+    )
+    assert response.json()["sourceScope"] == "discovery_provider"
+
+
+async def test_post_source_classifies_youtube_video_url_as_direct_resource(authed_client):
+    response = await authed_client.post(
+        "/api/sources",
+        json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "type": "youtube", "title": ""},
+    )
+    assert response.json()["sourceScope"] == "direct_resource"
+
+
 async def test_delete_source_returns_204(authed_client):
     response = await authed_client.delete("/api/sources/mock-id")
     assert response.status_code == 204
