@@ -162,6 +162,33 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                         )
                         created += 1
 
+                        # No job of any type ever enqueues "Extraction" (verified
+                        # across sources.py/candidates.py/notes.py/scheduler.py/
+                        # jobs.py) -- _extraction_handler exists but nothing
+                        # triggers it. Persist the content already fetched above
+                        # as Evidence now, or _note_gen_handler's NoEvidenceError
+                        # blocks this candidate's Note Gen forever.
+                        if extracted and extracted.text and not extracted.error:
+                            timestamps_json = (
+                                json.dumps(extracted.timestamps)
+                                if extracted.timestamps
+                                else None
+                            )
+                            await conn.execute(
+                                """INSERT INTO source_extractions
+                                   (source_id, user_id, text, title, author,
+                                    published_at, timestamps, word_count)
+                                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                                source["id"],
+                                user_id,
+                                extracted.text,
+                                extracted.title,
+                                extracted.author,
+                                extracted.published_at,
+                                timestamps_json,
+                                extracted.word_count,
+                            )
+
                     await conn.execute(
                         "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
                         source["id"],

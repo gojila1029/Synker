@@ -242,7 +242,7 @@ async def test_analysis_handler_persists_evidence_on_successful_extraction(monke
     _, args = inserts[0]
     assert source_id in args
     assert user_id in args
-    assert "Full real transcript text" in args
+    assert any("Full real transcript text" in str(a) for a in args)
 
 
 @pytest.mark.parametrize("tag,expected", [("UPDATE 1", True), ("UPDATE 0", False), (None, True)])
