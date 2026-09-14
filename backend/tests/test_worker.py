@@ -11,6 +11,7 @@ class FakeConn:
         self._fetch_result = fetch_result if fetch_result is not None else []
         self._fetchval_result = fetchval_result
         self.executed: list[tuple] = []
+        self.fetchval_calls: list[tuple] = []
 
     async def fetch(self, sql, *args):
         return self._fetch_result
@@ -19,6 +20,7 @@ class FakeConn:
         return self._fetchrow_result
 
     async def fetchval(self, sql, *args):
+        self.fetchval_calls.append((sql, args))
         return self._fetchval_result
 
     async def execute(self, sql, *args):
@@ -158,26 +160,34 @@ async def test_analysis_handler_preserves_real_error_on_failed_extraction(monkey
     assert recommendation != "process"
 
 
-async def test_analysis_handler_skips_extraction_for_discovery_provider_sources(monkeypatch):
-    """A source classified as discovery_provider (e.g. a bare platform
-    homepage) has no real discovery engine behind it yet — attempting direct
-    extraction on it produces the same misleading "Unknown" candidate this
-    fix addresses. Skip it honestly instead of pretending to have looked."""
+async def test_analysis_handler_skips_extraction_for_unsupported_discovery(monkeypatch):
+    """A discovery_provider source (e.g. a channel URL) that the real
+    discovery engine (app/adapters/youtube_discovery.py) cannot enumerate --
+    a search-result page, or a genuine yt-dlp failure -- must still be
+    skipped honestly instead of falling through to direct extraction, which
+    would only produce a misleading "Unknown" candidate."""
     import uuid as _uuid
+
+    from app.adapters.youtube_discovery import DiscoveryResult
 
     called = False
 
     async def _should_not_be_called(source_type, url):
         nonlocal called
         called = True
-        raise AssertionError("adapter_extract must not be called for discovery_provider sources")
+        raise AssertionError("adapter_extract must not be called when discovery is unsupported")
+
+    async def _fake_discover(url, limit=25):
+        return DiscoveryResult(unsupported_reason="Search result pages are not supported")
 
     monkeypatch.setattr(handlers, "adapter_extract", _should_not_be_called)
+    monkeypatch.setattr(handlers, "discover_channel_videos", _fake_discover)
 
     user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
     source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000cc")
     source = {
-        "id": source_id, "type": "youtube", "title": "", "url": "https://www.youtube.com/",
+        "id": source_id, "type": "youtube", "title": "",
+        "url": "https://www.youtube.com/results?search_query=insurance",
         "source_scope": "discovery_provider",
     }
     conn = FakeConn(fetch_result=[source], fetchval_result=None)
@@ -189,6 +199,99 @@ async def test_analysis_handler_skips_extraction_for_discovery_provider_sources(
     inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
     assert len(inserts) == 0
     assert "0 candidate" in result
+    log_calls = [args for sql, args in conn.executed if "processing_log" in sql]
+    assert any("Search result pages" in str(args) for args in log_calls)
+
+
+async def test_analysis_handler_discovery_provider_creates_candidates_from_videos(monkeypatch):
+    """Once discovery succeeds, each discovered video becomes its own
+    candidate (source_id pointing back to the channel/playlist source) with
+    its own real transcript persisted as Evidence -- not a single misleading
+    candidate for the channel itself."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+    from app.adapters.youtube_discovery import DiscoveredVideo, DiscoveryResult
+
+    async def _fake_discover(url, limit=25):
+        return DiscoveryResult(
+            videos=[
+                DiscoveredVideo(url="https://www.youtube.com/watch?v=vid1", title="Video 1"),
+                DiscoveredVideo(url="https://www.youtube.com/watch?v=vid2", title="Video 2"),
+            ]
+        )
+
+    async def _fake_extract(source_type, url):
+        return ExtractedContent(
+            text=f"Real transcript for {url}.",
+            title="Real title",
+            source_type=source_type,
+            word_count=4,
+        )
+
+    monkeypatch.setattr(handlers, "discover_channel_videos", _fake_discover)
+    monkeypatch.setattr(handlers, "adapter_extract", _fake_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000cc")
+    source = {
+        "id": source_id, "type": "youtube", "title": "My Channel",
+        "url": "https://www.youtube.com/@somechannel",
+        "source_scope": "discovery_provider",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    result = await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    candidate_inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
+    evidence_inserts = [
+        args for sql, args in conn.executed if "INSERT INTO source_extractions" in sql
+    ]
+    assert len(candidate_inserts) == 2
+    assert len(evidence_inserts) == 2
+    assert "2 candidate" in result
+    # Both candidates carry the channel source's id for lineage, but their
+    # own video URL as source_info -- not the channel URL for both.
+    source_ids_used = {args[1] for args in candidate_inserts}
+    assert source_ids_used == {source_id}
+    urls_used = {args[3] for args in candidate_inserts}
+    assert urls_used == {
+        "https://www.youtube.com/watch?v=vid1",
+        "https://www.youtube.com/watch?v=vid2",
+    }
+    log_calls = [sql for sql, args in conn.executed if "processing_log" in sql]
+    assert any("discovery_completed" in sql for sql in log_calls)
+
+
+async def test_dedup_check_does_not_filter_by_pending_status(monkeypatch):
+    """A candidate the user already approved or rejected is no longer
+    'pending' -- checking only status='pending' would let a later Analysis
+    or discovery run silently recreate it. The dedup check must consider
+    a candidate for the same source_info regardless of its status."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+
+    async def _fake_extract(source_type, url):
+        return ExtractedContent(text="Some text.", title="T", source_type=source_type, word_count=2)
+
+    monkeypatch.setattr(handlers, "adapter_extract", _fake_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source = {
+        "id": _uuid.UUID("00000000-0000-0000-0000-0000000000ee"),
+        "type": "web", "title": "", "url": "https://example.com/article",
+        "source_scope": "direct_resource",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    dedup_calls = [sql for sql, _ in conn.fetchval_calls if "FROM candidates" in sql]
+    assert len(dedup_calls) == 1
+    assert "status='pending'" not in dedup_calls[0]
 
 
 async def test_analysis_handler_persists_evidence_on_successful_extraction(monkeypatch):
