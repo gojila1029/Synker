@@ -1,11 +1,19 @@
 """YouTube source adapter.
 
-Fetches a video transcript via youtube-transcript-api and metadata via the
-YouTube oEmbed endpoint (no API key required).
+Transcript extraction strategy (in order):
+1. youtube-transcript-api  — fastest, no download, uses official captions
+2. yt-dlp auto-subs        — fallback when no official transcript; downloads
+                             auto-generated VTT subtitles to a temp dir
+3. Error                   — both methods failed; caller sees the reason
+
+Metadata always comes from the YouTube oEmbed endpoint (no API key required).
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import re
+import tempfile
 
 import httpx
 
@@ -15,6 +23,9 @@ _OEMBED = "https://www.youtube.com/oembed?url={url}&format=json"
 _YT_ID = re.compile(
     r"(?:v=|youtu\.be/|embed/|shorts/)([A-Za-z0-9_-]{11})"
 )
+_VTT_TIMESTAMP = re.compile(r"\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*")
+_VTT_TAG = re.compile(r"<[^>]+>")
+_VTT_CUE_ID = re.compile(r"^\d+$")
 
 
 def _extract_video_id(url: str) -> str | None:
@@ -22,8 +33,79 @@ def _extract_video_id(url: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _vtt_to_text(vtt: str) -> str:
+    """Convert VTT subtitle content to clean plain text, deduplicating
+    rolling-window lines that yt-dlp auto-subs commonly repeat."""
+    lines: list[str] = []
+    for raw in vtt.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("WEBVTT") or line.startswith("NOTE"):
+            continue
+        if _VTT_TIMESTAMP.match(line) or _VTT_CUE_ID.match(line):
+            continue
+        clean = _VTT_TAG.sub("", line).strip()
+        if clean:
+            lines.append(clean)
+
+    deduped: list[str] = []
+    for line in lines:
+        if not deduped or deduped[-1] != line:
+            deduped.append(line)
+    return " ".join(deduped)
+
+
+def _run_yt_dlp_subs(video_id: str) -> str | None:
+    """Download auto-generated subtitles via yt-dlp and return plain text.
+
+    Returns None when yt-dlp is not installed, no auto-subs are available,
+    or any other error occurs."""
+    try:
+        import yt_dlp  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        opts = {
+            "skip_download": True,
+            "writeautomaticsub": True,
+            "subtitlesformat": "vtt",
+            "subtitleslangs": ["en", "en-US", "ko"],
+            "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception:
+            return None
+
+        for fname in os.listdir(tmpdir):
+            if fname.endswith(".vtt"):
+                try:
+                    with open(os.path.join(tmpdir, fname), encoding="utf-8") as f:
+                        return _vtt_to_text(f.read())
+                except Exception:
+                    return None
+    return None
+
+
+async def _fetch_meta(url: str) -> dict:
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            resp = await client.get(_OEMBED.format(url=url))
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPError:
+            return {}
+
+
 async def extract(url: str) -> ExtractedContent:
-    """Fetch transcript and metadata from a YouTube video URL."""
+    """Fetch transcript and metadata from a YouTube video URL.
+
+    Tries youtube-transcript-api first; falls back to yt-dlp auto-subs
+    when no official transcript is available."""
     video_id = _extract_video_id(url)
     if not video_id:
         return ExtractedContent(
@@ -34,55 +116,48 @@ async def extract(url: str) -> ExtractedContent:
             error=f"Cannot extract video ID from URL: {url}",
         )
 
+    text: str = ""
+    timestamps: list[dict] = []
+    transcript_error: str = ""
+
+    # ── Strategy 1: youtube-transcript-api (v1.0+) ──────────────────────────
     try:
-        from youtube_transcript_api import (
+        from youtube_transcript_api import (  # type: ignore[import-untyped]
             NoTranscriptFound,
             TranscriptsDisabled,
             YouTubeTranscriptApi,
         )
+        fetched = YouTubeTranscriptApi().fetch(video_id)
+        entries = fetched.to_raw_data()
+        text = " ".join(e["text"] for e in entries)
+        timestamps = [{"seconds": int(e["start"]), "text": e["text"]} for e in entries]
     except ImportError:
-        return ExtractedContent(
-            text="",
-            title="",
-            source_url=url,
-            source_type="youtube",
-            error="youtube-transcript-api is not installed",
-        )
-
-    try:
-        entries = YouTubeTranscriptApi.get_transcript(video_id)  # type: ignore[attr-defined]
+        transcript_error = "youtube-transcript-api is not installed"
     except (NoTranscriptFound, TranscriptsDisabled):
-        return ExtractedContent(
-            text="",
-            title="",
-            source_url=url,
-            source_type="youtube",
-            error=f"No transcript available for {video_id}",
-        )
+        transcript_error = f"No transcript available for {video_id}"
     except Exception as exc:
-        return ExtractedContent(
-            text="",
-            title="",
-            source_url=url,
-            source_type="youtube",
-            error=f"Error fetching transcript: {exc}",
-        )
+        transcript_error = f"Transcript fetch error: {exc}"
 
-    text = " ".join(e["text"] for e in entries)
-    timestamps = [
-        {"seconds": int(e["start"]), "text": e["text"]} for e in entries
-    ]
+    # ── Strategy 2: yt-dlp auto-generated subtitles ─────────────────────────
+    if not text and transcript_error:
+        auto_text = await asyncio.to_thread(_run_yt_dlp_subs, video_id)
+        if auto_text:
+            text = auto_text
+            transcript_error = ""
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        try:
-            resp = await client.get(_OEMBED.format(url=url))
-            resp.raise_for_status()
-            meta = resp.json()
-        except httpx.HTTPError:
-            meta = {}
-
+    meta = await _fetch_meta(url)
     title = meta.get("title") or f"YouTube video {video_id}"
     author = meta.get("author_name")
+
+    if not text:
+        return ExtractedContent(
+            text="",
+            title=title,
+            source_url=url,
+            source_type="youtube",
+            author=author,
+            error=transcript_error or f"No transcript available for {video_id}",
+        )
 
     return ExtractedContent(
         source_url=url,
@@ -99,5 +174,4 @@ class YoutubeAdapter(SourceAdapter):
     """Extract transcript and metadata from a YouTube video URL."""
 
     async def extract(self, url: str) -> ExtractedContent:
-        """Fetch transcript and metadata from a YouTube video."""
         return await extract(url)

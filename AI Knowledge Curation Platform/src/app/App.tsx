@@ -890,16 +890,16 @@ function KnowledgeReviewScreen() {
   async function handleApprove(id: string) {
     if (noteActing) return;
     setNoteActing("approve");
-    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); refetch(); }
+    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); }
     catch (e) { toast.error(`Failed to save note: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setNoteActing(null); }
+    finally { setNoteActing(null); refetch(); }
   }
   async function handleReject(id: string) {
     if (noteActing) return;
     setNoteActing("reject");
-    try { await api.notes.reject(id); toast.success("Note rejected"); refetch(); }
+    try { await api.notes.reject(id); toast.success("Note rejected"); }
     catch (e) { toast.error(`Failed to reject note: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setNoteActing(null); }
+    finally { setNoteActing(null); refetch(); }
   }
 
   return (
@@ -1254,10 +1254,17 @@ function SettingsScreen() {
       <SettingsSection title="Vault" description="Where Synker writes your generated notes" onSave={() => save("vault", vault)}>
         <div><label className={labelCls}>Vault name</label><input className={inputCls} value={vault.name} onChange={(e) => setVault({ ...vault, name: e.target.value })} /></div>
         <div>
-          <label className={labelCls}>Vault path</label>
-          <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} placeholder="Set by the Local Sync Bridge, or type a path manually" />
+          <label className={labelCls}>Obsidian vault path</label>
+          <input
+            className={inputCls}
+            value={vault.path}
+            onChange={(e) => setVault({ ...vault, path: e.target.value })}
+            placeholder="e.g. C:\Users\you\Documents\MyVault  or  /Users/you/Documents/MyVault"
+          />
           <p className="text-xs text-slate-500 mt-1.5">
-            Folder selection happens in the Local Sync Bridge, which runs on your own machine and can open a real folder picker — this server can't. Install and run the bridge, then pick your vault folder there.
+            Type the absolute path to your Obsidian vault folder. Approved notes will be written here as <code>.md</code> files under a <code>Synker/</code> subfolder.
+            {" "}On Windows use backslashes (<code>C:\Users\…</code>); on Mac/Linux use forward slashes (<code>/Users/…</code>).
+            {" "}If the backend runs on a remote server (Railway), notes are stored in the cloud vault browser above; to sync them to your local Obsidian install and run the <strong>Local Sync Bridge</strong> on your machine.
           </p>
         </div>
       </SettingsSection>

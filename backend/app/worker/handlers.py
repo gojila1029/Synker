@@ -137,11 +137,12 @@ async def _create_candidate_with_evidence(
             )
             await conn.execute(
                 """INSERT INTO source_extractions
-                   (source_id, user_id, text, title, author,
+                   (source_id, user_id, source_url, text, title, author,
                     published_at, timestamps, word_count)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
                 source_id,
                 user_id,
+                source_url,
                 extracted.text,
                 extracted.title,
                 extracted.author,
@@ -418,13 +419,20 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             source_type = source_row["type"] if source_row else "web"
 
             # No Evidence -> No Note: require a real extraction row for this
-            # source rather than falling back to the candidate's discovery blurb.
+            # source. For discovery_provider channels, multiple video extractions
+            # share the same source_id — prefer the row whose source_url matches
+            # the candidate's own URL so the right transcript is used.
             evidence = None
             if source_id:
                 evidence = await conn.fetchrow(
                     """SELECT text FROM source_extractions
-                       WHERE source_id=$1 ORDER BY extracted_at DESC LIMIT 1""",
+                       WHERE source_id=$1
+                       ORDER BY
+                           CASE WHEN source_url=$2 THEN 0 ELSE 1 END,
+                           extracted_at DESC
+                       LIMIT 1""",
                     source_id,
+                    source_url,
                 )
 
         existing_titles = [r["title"] for r in existing_rows]

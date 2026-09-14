@@ -45,7 +45,7 @@ async function GET<T>(path: string, fallback: T): Promise<T> {
     return res.json() as Promise<T>;
   } catch (e) {
     if (e instanceof UnauthorizedError) throw e;
-    if (++_failStreak >= 2) _isDemo = true;
+    if (++_failStreak >= 3) _isDemo = true;
     return fallback;
   }
 }
@@ -62,6 +62,7 @@ async function POST<T = void>(path: string, body?: unknown): Promise<T> {
     const text = await res.text().catch(() => "");
     throw new Error(httpErrorMessage(res.status, text));
   }
+  _failStreak = 0;
   _isDemo = false;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -79,6 +80,7 @@ async function PATCH<T = void>(path: string, body: unknown): Promise<T> {
     const text = await res.text().catch(() => "");
     throw new Error(httpErrorMessage(res.status, text));
   }
+  _failStreak = 0;
   _isDemo = false;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
