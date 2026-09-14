@@ -191,6 +191,60 @@ async def test_analysis_handler_skips_extraction_for_discovery_provider_sources(
     assert "0 candidate" in result
 
 
+async def test_analysis_handler_persists_evidence_on_successful_extraction(monkeypatch):
+    """No code path anywhere in the backend ever creates a job of type
+    'Extraction' (verified by grepping every INSERT INTO jobs call site) —
+    _extraction_handler and every adapter exist and work, but nothing
+    automatically triggers them. That leaves source_extractions permanently
+    empty, so _note_gen_handler's NoEvidenceError check fails every single
+    Note Gen job, for every source type, forever. _analysis_handler already
+    fetches the full ExtractedContent to build the candidate summary — it
+    must persist that same content as Evidence instead of only using a
+    500-char truncation for display, or Notes can never be generated."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+
+    async def _fake_extract(source_type, url):
+        return ExtractedContent(
+            text="Full real transcript text, much longer than 500 chars for the summary.",
+            title="Real Title",
+            author="Real Author",
+            published_at="2026-01-01T00:00:00Z",
+            source_type=source_type,
+            word_count=11,
+            timestamps=[{"seconds": 0, "text": "Full"}],
+        )
+
+    monkeypatch.setattr(handlers, "adapter_extract", _fake_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000dd")
+    source = {
+        "id": source_id,
+        "type": "youtube",
+        "title": "",
+        "url": "https://www.youtube.com/watch?v=abc12345678",
+        "source_scope": "direct_resource",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    inserts = [
+        (sql, args) for sql, args in conn.executed if "INSERT INTO source_extractions" in sql
+    ]
+    assert len(inserts) == 1, (
+        "a successful extraction must be persisted as Evidence — otherwise "
+        "Note Gen can never find it and every candidate stays stuck forever"
+    )
+    _, args = inserts[0]
+    assert source_id in args
+    assert user_id in args
+    assert "Full real transcript text" in args
+
+
 @pytest.mark.parametrize("tag,expected", [("UPDATE 1", True), ("UPDATE 0", False), (None, True)])
 def test_affected(tag, expected):
     assert runner._affected(tag) is expected
