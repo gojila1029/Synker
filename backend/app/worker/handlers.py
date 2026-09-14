@@ -17,6 +17,7 @@ from urllib.parse import urlparse
 from app.adapters import extract as adapter_extract
 from app.adapters.base import ExtractedContent, ExtractionError
 from app.adapters.registry import get_adapter
+from app.adapters.youtube_discovery import discover_channel_videos
 from app.ai import generate_note
 
 # pct -> None. Persists progress + heartbeat for the running job.
@@ -48,14 +49,180 @@ def _safe_filename(title: str) -> str:
     return safe[:100]
 
 
+def _candidate_fields(
+    extracted: ExtractedContent | None, fallback_title: str, domain: str
+) -> dict[str, Any]:
+    """Build a candidate row's variable fields from an extraction result,
+    honestly reflecting failure (Stage 6 ROOT CAUSE #1) rather than a fake
+    healthy-looking score. Shared between the direct_resource path and each
+    video discovered from a discovery_provider source."""
+    if extracted and (extracted.error or not extracted.text):
+        # Honest failure: keep the real error, do not claim a normal
+        # quality/confidence score, and fall back to the domain (not the
+        # word "Unknown") when there's no title — the URL/domain is real
+        # lineage, "Unknown" is not.
+        return {
+            "title": fallback_title or domain or "Untitled source",
+            "summary": extracted.error if extracted.error else "Extraction pending",
+            "published_at": None,
+            "word_count": 0,
+            "recommendation": "review",
+            "quality_score": 0.0,
+            "confidence_score": 0.0,
+        }
+    return {
+        "title": extracted.title if extracted else fallback_title,
+        "summary": extracted.text[:500] if extracted and extracted.text else "",
+        "published_at": extracted.published_at if extracted else None,
+        "word_count": extracted.word_count if extracted else 0,
+        "recommendation": "process",
+        "quality_score": 0.75,
+        "confidence_score": 0.70,
+    }
+
+
+async def _create_candidate_with_evidence(
+    pool: Any,
+    user_id: Any,
+    source_id: Any,
+    source_url: str,
+    domain: str,
+    fields: dict[str, Any],
+    extracted: ExtractedContent | None,
+) -> bool:
+    """Insert a candidate row, deduped against ANY existing candidate for
+    this source_url regardless of status — an approved or rejected
+    candidate must never be silently recreated just because it is no
+    longer 'pending'. Also persists the extraction as Evidence
+    (source_extractions) when it actually succeeded, since no job type
+    anywhere in this codebase ever enqueues a separate "Extraction" job to
+    do that later. Returns True if a new candidate was created."""
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+            user_id,
+            source_url,
+        )
+        if existing:
+            return False
+
+        await conn.execute(
+            """INSERT INTO candidates
+               (user_id, source_id, title, source_info, domain, published_at,
+                recommendation, quality_score, confidence_score,
+                duplicate_score, expected_notes, estimated_tokens,
+                summary, extracted_topics, status)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                       $12, $13, $14, $15)""",
+            user_id,
+            source_id,
+            fields["title"],
+            source_url,
+            domain,
+            fields["published_at"],
+            fields["recommendation"],
+            fields["quality_score"],
+            fields["confidence_score"],
+            0.05,
+            1,
+            max(1000, fields["word_count"] * 2),
+            fields["summary"],
+            [],
+            "pending",
+        )
+
+        if extracted and extracted.text and not extracted.error:
+            timestamps_json = (
+                json.dumps(extracted.timestamps) if extracted.timestamps else None
+            )
+            await conn.execute(
+                """INSERT INTO source_extractions
+                   (source_id, user_id, text, title, author,
+                    published_at, timestamps, word_count)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                source_id,
+                user_id,
+                extracted.text,
+                extracted.title,
+                extracted.author,
+                extracted.published_at,
+                timestamps_json,
+                extracted.word_count,
+            )
+    return True
+
+
+async def _discover_videos_for_source(
+    pool: Any, user_id: Any, source: dict[str, Any]
+) -> int | None:
+    """Real Discovery engine for a discovery_provider source (a YouTube
+    channel/playlist URL with no resolvable video id — see
+    app/adapters/classify.py). Enumerates its videos via yt-dlp and creates
+    one candidate + Evidence pair per new video. Returns the count created,
+    or None when discovery was skipped (unsupported/failed) -- the caller
+    must not lump that in with "0 videos found" since a skipped source is
+    already marked 'failed' and must not be flipped back to 'done'."""
+    discovery = await discover_channel_videos(source["url"])
+
+    if discovery.error or discovery.unsupported_reason:
+        reason = discovery.error or discovery.unsupported_reason
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO processing_log
+                   (user_id, entity_type, entity_id, action, details)
+                   VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                user_id,
+                source["id"],
+                json.dumps({"reason": reason}),
+            )
+            await conn.execute(
+                "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                source["id"],
+                user_id,
+            )
+        return None
+
+    discovered_count = 0
+    for video in discovery.videos:
+        video_extracted: ExtractedContent | None = None
+        try:
+            video_extracted = await adapter_extract("youtube", video.url)
+        except Exception as exc:
+            video_extracted = ExtractedContent(text="", title="", error=str(exc))
+
+        video_domain = urlparse(video.url).netloc if video.url else ""
+        fields = _candidate_fields(video_extracted, video.title, video_domain)
+
+        created = await _create_candidate_with_evidence(
+            pool, user_id, source["id"], video.url, video_domain, fields, video_extracted
+        )
+        if created:
+            discovered_count += 1
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_log
+               (user_id, entity_type, entity_id, action, details)
+               VALUES ($1, 'source', $2, 'discovery_completed', $3::jsonb)""",
+            user_id,
+            source["id"],
+            json.dumps({"found": len(discovery.videos), "created": discovered_count}),
+        )
+        await conn.execute(
+            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+            source["id"],
+            user_id,
+        )
+    return discovered_count
+
+
 async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any) -> str:
     """Discovery: scan queued sources, extract metadata, create candidate records.
 
-    A source classified as discovery_provider (a bare platform URL — see
-    app/adapters/classify.py) has no real discovery engine behind it yet, so
-    it is skipped honestly rather than run through direct extraction, which
-    would only produce a misleading "Unknown" candidate that looks like a
-    normal, healthy result."""
+    A source classified as discovery_provider (a channel/playlist URL — see
+    app/adapters/classify.py) is enumerated via _discover_videos_for_source
+    into one candidate per real video, instead of the single source itself
+    becoming a misleading "Unknown" candidate."""
     user_id = job["user_id"]
     created = 0
     skipped_discovery_ids: list[Any] = []
@@ -80,21 +247,15 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                 source_url = source["url"]
 
                 if source["source_scope"] == "discovery_provider":
-                    skipped_discovery_ids.append(source["id"])
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            """INSERT INTO processing_log
-                               (user_id, entity_type, entity_id, action, details)
-                               VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
-                            user_id,
-                            source["id"],
-                            json.dumps({"reason": "no discovery engine implemented yet"}),
-                        )
-                        await conn.execute(
-                            "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
-                            source["id"],
-                            user_id,
-                        )
+                    discovered = await _discover_videos_for_source(pool, user_id, source)
+                    if discovered is None:
+                        # Skipped (unsupported/failed) -- already marked
+                        # 'failed' inside the helper. Exclude from the
+                        # final 'done' batch below so that status is not
+                        # clobbered back to done.
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        created += discovered
                     continue
 
                 extracted = None
@@ -104,91 +265,14 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                     extracted = ExtractedContent(text="", title="", error=str(exc))
 
                 domain = urlparse(source_url).netloc if source_url else ""
+                fields = _candidate_fields(extracted, source["title"], domain)
 
-                if extracted and (extracted.error or not extracted.text):
-                    # Honest failure: keep the real error, do not claim a
-                    # normal quality/confidence score, and fall back to the
-                    # domain (not the word "Unknown") when there's no title —
-                    # the URL/domain is real lineage, "Unknown" is not.
-                    title = source["title"] or domain or "Untitled source"
-                    summary = (extracted.error if extracted and extracted.error
-                               else "Extraction pending")
-                    published_at = None
-                    word_count = 0
-                    recommendation = "review"
-                    quality_score = 0.0
-                    confidence_score = 0.0
-                else:
-                    title = extracted.title if extracted else source["title"]
-                    summary = extracted.text[:500] if extracted and extracted.text else ""
-                    published_at = extracted.published_at if extracted else None
-                    word_count = extracted.word_count if extracted else 0
-                    recommendation = "process"
-                    quality_score = 0.75
-                    confidence_score = 0.70
+                if await _create_candidate_with_evidence(
+                    pool, user_id, source["id"], source_url, domain, fields, extracted
+                ):
+                    created += 1
 
                 async with pool.acquire() as conn:
-                    existing = await conn.fetchval(
-                        """SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2
-                           AND status='pending' LIMIT 1""",
-                        user_id,
-                        source_url,
-                    )
-
-                    if not existing:
-                        await conn.execute(
-                            """INSERT INTO candidates
-                               (user_id, source_id, title, source_info, domain, published_at,
-                                recommendation, quality_score, confidence_score,
-                                duplicate_score, expected_notes, estimated_tokens,
-                                summary, extracted_topics, status)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                                       $12, $13, $14, $15)""",
-                            user_id,
-                            source["id"],
-                            title,
-                            source_url,
-                            domain,
-                            published_at,
-                            recommendation,
-                            quality_score,
-                            confidence_score,
-                            0.05,
-                            1,
-                            max(1000, word_count * 2),
-                            summary,
-                            [],
-                            "pending",
-                        )
-                        created += 1
-
-                        # No job of any type ever enqueues "Extraction" (verified
-                        # across sources.py/candidates.py/notes.py/scheduler.py/
-                        # jobs.py) -- _extraction_handler exists but nothing
-                        # triggers it. Persist the content already fetched above
-                        # as Evidence now, or _note_gen_handler's NoEvidenceError
-                        # blocks this candidate's Note Gen forever.
-                        if extracted and extracted.text and not extracted.error:
-                            timestamps_json = (
-                                json.dumps(extracted.timestamps)
-                                if extracted.timestamps
-                                else None
-                            )
-                            await conn.execute(
-                                """INSERT INTO source_extractions
-                                   (source_id, user_id, text, title, author,
-                                    published_at, timestamps, word_count)
-                                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
-                                source["id"],
-                                user_id,
-                                extracted.text,
-                                extracted.title,
-                                extracted.author,
-                                extracted.published_at,
-                                timestamps_json,
-                                extracted.word_count,
-                            )
-
                     await conn.execute(
                         "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
                         source["id"],

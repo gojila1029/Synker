@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 _SEARCH_URL = re.compile(r"/results\b.*[?&]search_query=")
 
@@ -43,16 +44,16 @@ def _is_search_url(url: str) -> bool:
     return bool(_SEARCH_URL.search(url))
 
 
-def _video_url(entry: dict) -> str:
+def _video_url(entry: dict[str, Any]) -> str:
     url = entry.get("url")
     if url:
-        return url
+        return str(url)
     return f"https://www.youtube.com/watch?v={entry.get('id')}"
 
 
 def _run_yt_dlp(url: str, limit: int) -> DiscoveryResult:
     try:
-        import yt_dlp
+        import yt_dlp  # type: ignore[import-untyped]
     except ImportError:
         return DiscoveryResult(error="yt-dlp is not installed")
 
