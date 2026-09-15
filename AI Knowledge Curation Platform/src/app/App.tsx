@@ -6,7 +6,7 @@ import { LoginPage } from "./LoginPage";
 import {
   LayoutDashboard, Globe, CheckSquare, Cpu, BookOpen, FolderOpen, Settings,
   RefreshCw, Play, ChevronDown, ChevronRight, Tag, Shield, AlertTriangle,
-  CheckCircle2, XCircle, Clock, FileText, Link2, Zap, Plus, Trash2,
+  CheckCircle2, XCircle, Clock, FileText, Link2, Zap, Plus, Trash2, Eye, EyeOff,
   Youtube, File, FolderClosed, Search, ArrowRight, X, Eye, EyeOff,
   GitMerge, SkipForward, Wifi, WifiOff, RotateCcw, Activity,
 } from "lucide-react";
@@ -1217,6 +1217,8 @@ function SettingsScreen() {
   const [team, setTeam] = useState(seedSettings.team);
   const [claudeKey, setClaudeKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
+  const [showClaudeKey, setShowClaudeKey] = useState(false);
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const hasLoaded = useRef(false);
 
   useEffect(() => {
@@ -1288,8 +1290,24 @@ function SettingsScreen() {
 
       <SettingsSection title="AI Providers" description="API keys and fallback order for note generation" onSave={saveAiProviders}>
         <div className="grid grid-cols-2 gap-4">
-          <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} /></div>
-          <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} /></div>
+          <div>
+            <label className={labelCls}>Anthropic (Claude)</label>
+            <div className="relative">
+              <input type={showClaudeKey ? "text" : "password"} className={inputCls + " pr-10"} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} />
+              <button type="button" onClick={() => setShowClaudeKey(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" tabIndex={-1}>
+                {showClaudeKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>OpenAI</label>
+            <div className="relative">
+              <input type={showOpenaiKey ? "text" : "password"} className={inputCls + " pr-10"} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} />
+              <button type="button" onClick={() => setShowOpenaiKey(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" tabIndex={-1}>
+                {showOpenaiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
         </div>
         <div>
           <label className={labelCls}>Fallback order</label>
