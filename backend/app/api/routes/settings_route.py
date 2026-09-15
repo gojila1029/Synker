@@ -43,8 +43,12 @@ async def get_settings(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> SettingsRead:
-    user_id = current_user["sub"]
-    row = await db.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", user_id)
+    import uuid as _uuid
+    try:
+        uid = _uuid.UUID(current_user["sub"])
+    except (ValueError, KeyError):
+        return SettingsRead()
+    row = await db.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", uid)
     if row is None:
         return SettingsRead()
     ai_raw: dict = row["ai_providers"] or {}
@@ -71,7 +75,11 @@ async def update_settings(
     current_user: dict[str, Any] = Depends(get_current_user),
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> dict[str, Any]:
-    user_id = current_user["sub"]
+    import uuid as _uuid
+    try:
+        uid = _uuid.UUID(current_user["sub"])
+    except (ValueError, KeyError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID")
     valid = {"vault", "ai_providers", "privacy", "discovery", "cleanup", "notifications", "team"}
     if section not in valid:
         raise HTTPException(
@@ -85,7 +93,7 @@ async def update_settings(
                VALUES ($1, $2, $3)
                ON CONFLICT (user_id) DO UPDATE
                SET vault_path = $2, vault_name = $3, updated_at = now()""",
-            user_id,
+            uid,
             body.get("path", ""),
             body.get("name", "My Vault"),
         )
@@ -96,7 +104,7 @@ async def update_settings(
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET team_tier = $2, updated_at = now()""",
-            user_id,
+            uid,
             tier,
         )
     elif section == "ai_providers":
@@ -110,7 +118,7 @@ async def update_settings(
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET ai_providers = $2, updated_at = now()""",
-            user_id,
+            uid,
             data,
         )
     else:
@@ -120,7 +128,7 @@ async def update_settings(
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET {col} = $2, updated_at = now()""",
-            user_id,
+            uid,
             body,
         )
 

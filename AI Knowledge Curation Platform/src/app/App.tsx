@@ -1207,7 +1207,7 @@ function SettingsSection({ title, description, children, onSave }: { title: stri
 }
 
 function SettingsScreen() {
-  const { data: settings } = useApi(api.settings.get, seedSettings);
+  const { data: settings, refetch: refetchSettings } = useApi(api.settings.get, seedSettings);
   const [vault, setVault] = useState(seedSettings.vault);
   const [ai, setAi] = useState(seedSettings.aiProviders);
   const [privacy, setPrivacy] = useState(seedSettings.privacy);
@@ -1233,8 +1233,14 @@ function SettingsScreen() {
   }, [settings]);
 
   async function save(section: string, payload: unknown) {
-    try { await api.settings.update(section, payload); toast.success("Settings saved"); }
-    catch (e) { toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+    try {
+      await api.settings.update(section, payload);
+      toast.success("Settings saved");
+      hasLoaded.current = false;
+      refetchSettings();
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    }
   }
 
   async function saveAiProviders() {
