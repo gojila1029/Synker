@@ -1207,7 +1207,7 @@ function SettingsSection({ title, description, children, onSave }: { title: stri
 }
 
 function SettingsScreen() {
-  const { data: settings, refetch: refetchSettings } = useApi(api.settings.get, seedSettings);
+  const { data: settings, loading: settingsLoading } = useApi(api.settings.get, seedSettings);
   const [vault, setVault] = useState(seedSettings.vault);
   const [ai, setAi] = useState(seedSettings.aiProviders);
   const [privacy, setPrivacy] = useState(seedSettings.privacy);
@@ -1236,8 +1236,6 @@ function SettingsScreen() {
     try {
       await api.settings.update(section, payload);
       toast.success("Settings saved");
-      hasLoaded.current = false;
-      refetchSettings();
     } catch (e) {
       toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`);
     }
@@ -1247,7 +1245,20 @@ function SettingsScreen() {
     if (claudeKey && !claudeKey.startsWith("sk-ant-")) { toast.error("Anthropic keys must start with sk-ant-"); return; }
     if (openaiKey && !openaiKey.startsWith("sk-")) { toast.error("OpenAI keys must start with sk-"); return; }
     const payload: AIProvidersWrite = { claudeKey: claudeKey || undefined, openaiKey: openaiKey || undefined, ollamaUrl: ai.ollamaUrl, fallbackOrder: ai.fallbackOrder };
-    await save("ai_providers", payload);
+    try {
+      await api.settings.update("ai_providers", payload);
+      toast.success("Settings saved");
+      // Update key-set flags locally — no full refetch so other sections are not overwritten
+      setAi(prev => ({
+        ...prev,
+        claudeKeySet: !!claudeKey || prev.claudeKeySet,
+        openaiKeySet: !!openaiKey || prev.openaiKeySet,
+      }));
+      setClaudeKey("");
+      setOpenaiKey("");
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    }
   }
 
   const inputCls = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 bg-white transition-all placeholder:text-slate-400";
@@ -1277,8 +1288,8 @@ function SettingsScreen() {
 
       <SettingsSection title="AI Providers" description="API keys and fallback order for note generation" onSave={saveAiProviders}>
         <div className="grid grid-cols-2 gap-4">
-          <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} /></div>
-          <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} /></div>
+          <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} /></div>
+          <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} /></div>
         </div>
         <div>
           <label className={labelCls}>Fallback order</label>
