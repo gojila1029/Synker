@@ -91,6 +91,53 @@ def _run_yt_dlp_subs(video_id: str) -> str | None:
     return None
 
 
+def _run_yt_dlp_audio_stt(video_id: str, groq_api_key: str) -> str | None:
+    """Download audio via yt-dlp and transcribe with Groq Whisper (Strategy 3).
+
+    Covers videos that have no captions at all — not just IP-blocked ones.
+    Returns transcript text, or None on any failure (missing deps, network
+    error, Groq error). Never raises."""
+    if not groq_api_key:
+        return None
+    try:
+        import yt_dlp  # type: ignore[import-untyped]
+    except ImportError:
+        return None
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    with tempfile.TemporaryDirectory() as tmpdir:
+        opts = {
+            "format": "bestaudio[ext=m4a]/bestaudio",
+            "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
+            "quiet": True,
+            "no_warnings": True,
+        }
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+        except Exception:
+            return None
+
+        audio_files = [f for f in os.listdir(tmpdir) if not f.startswith(".")]
+        if not audio_files:
+            return None
+        audio_path = os.path.join(tmpdir, audio_files[0])
+
+        try:
+            from groq import Groq  # type: ignore[import-untyped]
+
+            client = Groq(api_key=groq_api_key)
+            with open(audio_path, "rb") as f:
+                result = client.audio.transcriptions.create(
+                    file=f,
+                    model="whisper-large-v3-turbo",
+                    response_format="text",
+                )
+            return str(result) if result else None
+        except Exception:
+            return None
+
+
 async def _fetch_meta(url: str) -> dict:
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
@@ -143,6 +190,17 @@ async def extract(url: str) -> ExtractedContent:
         auto_text = await asyncio.to_thread(_run_yt_dlp_subs, video_id)
         if auto_text:
             text = auto_text
+            transcript_error = ""
+
+    # ── Strategy 3: Groq Whisper STT (audio download + transcription) ────────
+    if not text:
+        from app.core.config import settings
+
+        stt_text = await asyncio.to_thread(
+            _run_yt_dlp_audio_stt, video_id, settings.groq_api_key
+        )
+        if stt_text:
+            text = stt_text
             transcript_error = ""
 
     meta = await _fetch_meta(url)

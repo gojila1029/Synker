@@ -181,3 +181,58 @@ async def reaper_loop(stop: asyncio.Event, pool: Any | None = None) -> None:
             await asyncio.wait_for(stop.wait(), timeout=settings.job_stale_seconds)
         except TimeoutError:
             pass
+
+
+async def scheduler_loop(stop: asyncio.Event, pool: Any | None = None) -> None:
+    """Auto-create Analysis jobs for users who have queued sources but no
+    pending or running Analysis job. Runs every worker_poll_seconds * 10
+    seconds so the default 10-minute cadence is approximated without a
+    separate config setting."""
+    pool = pool or await get_pool()
+    interval = settings.worker_poll_seconds * 10
+    _log.info("Scheduler loop started (interval=%.0fs)", interval)
+    while not stop.is_set():
+        try:
+            async with pool.acquire() as conn:
+                users = await conn.fetch(
+                    "SELECT DISTINCT user_id FROM sources WHERE status = 'queued'"
+                )
+                for row in users:
+                    uid = row["user_id"]
+                    already = await conn.fetchval(
+                        """SELECT 1 FROM jobs
+                           WHERE user_id = $1
+                             AND type = 'Analysis'
+                             AND status IN ('queued', 'running')
+                           LIMIT 1""",
+                        uid,
+                    )
+                    if already:
+                        continue
+                    job_row = await conn.fetchrow(
+                        """INSERT INTO jobs (user_id, source_title, type)
+                           VALUES ($1, 'Discovery Run', 'Analysis')
+                           RETURNING id""",
+                        uid,
+                    )
+                    if job_row:
+                        await conn.execute(
+                            """INSERT INTO processing_log
+                               (user_id, entity_type, entity_id, action, details)
+                               VALUES ($1, 'job', $2, 'created', $3::jsonb)""",
+                            uid,
+                            job_row["id"],
+                            '{"message": "Auto-scheduled Analysis run"}',
+                        )
+                        _log.info(
+                            "Scheduler: created Analysis job %s for user %s",
+                            job_row["id"],
+                            uid,
+                        )
+        except Exception:  # noqa: BLE001
+            _log.exception("Scheduler sweep failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+        except TimeoutError:
+            pass
+    _log.info("Scheduler loop stopped")

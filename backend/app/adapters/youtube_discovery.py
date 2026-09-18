@@ -51,6 +51,22 @@ def _video_url(entry: dict[str, Any]) -> str:
     return f"https://www.youtube.com/watch?v={entry.get('id')}"
 
 
+def _is_video_entry(entry: dict[str, Any]) -> bool:
+    """True when the entry represents an individual video.
+
+    yt-dlp sometimes returns a channel tab (e.g. '3Blue1Brown - Videos') as
+    a single entry when given a channel URL. YouTube channel IDs always start
+    with 'UC' and are 24 characters; video IDs never use that prefix. Skip
+    channel-tab entries so only real video entries reach the pipeline."""
+    eid = str(entry.get("id") or "")
+    if eid.startswith("UC") and len(eid) == 24:
+        return False
+    url = entry.get("url") or ""
+    if url and "/channel/" in url and "watch?v=" not in url:
+        return False
+    return True
+
+
 def _run_yt_dlp(url: str, limit: int) -> DiscoveryResult:
     try:
         import yt_dlp  # type: ignore[import-untyped]
@@ -74,7 +90,7 @@ def _run_yt_dlp(url: str, limit: int) -> DiscoveryResult:
     videos = [
         DiscoveredVideo(url=_video_url(entry), title=entry.get("title") or "Untitled video")
         for entry in entries
-        if entry
+        if entry and _is_video_entry(entry)
     ]
     return DiscoveryResult(videos=videos)
 
