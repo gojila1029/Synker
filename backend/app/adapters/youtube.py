@@ -96,33 +96,33 @@ def _run_yt_dlp_subs(video_id: str) -> str | None:
     return None
 
 
-def _run_yt_dlp_audio_stt(video_id: str, groq_api_key: str) -> str | None:
-    """Download audio via yt-dlp and transcribe with Groq Whisper (Strategy 3).
+def _run_pytubefix_audio_stt(video_id: str, groq_api_key: str) -> str | None:
+    """Download audio via pytubefix (YouTube InnerTube API) and transcribe with Groq Whisper.
 
-    Covers videos that have no captions at all — not just IP-blocked ones.
-    Returns transcript text, or None on any failure (missing deps, network
-    error, Groq error). Never raises."""
+    pytubefix uses YouTube's InnerTube API which is less aggressively blocked on
+    datacenter IPs compared to yt-dlp. Returns transcript text, or None on any
+    failure (missing deps, network error, Groq error). Never raises."""
     if not groq_api_key:
         _log.debug("Strategy 3 (Groq STT) skipped: GROQ_API_KEY not configured")
         return None
     try:
-        import yt_dlp  # type: ignore[import-untyped]
+        from pytubefix import YouTube  # type: ignore[import-untyped]
     except ImportError:
+        _log.debug("Strategy 3 skipped: pytubefix not installed")
         return None
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     with tempfile.TemporaryDirectory() as tmpdir:
-        opts = {
-            "format": "bestaudio[ext=m4a]/bestaudio",
-            "outtmpl": os.path.join(tmpdir, "%(id)s.%(ext)s"),
-            "quiet": True,
-            "no_warnings": True,
-        }
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.download([url])
+            yt = YouTube(url)
+            audio_stream = yt.streams.filter(only_audio=True).order_by("abr").last()
+            if not audio_stream:
+                _log.warning("No audio stream found for %s (Strategy 3)", video_id)
+                return None
+            audio_stream.download(output_path=tmpdir, filename=f"{video_id}.mp4")
         except Exception as exc:
-            _log.warning("yt-dlp audio download failed for %s (Strategy 3): %s", video_id, exc)
+            _log.warning("pytubefix audio download failed for %s (Strategy 3): %s: %s",
+                         video_id, type(exc).__name__, exc)
             return None
 
         audio_files = [f for f in os.listdir(tmpdir) if not f.startswith(".")]
@@ -143,7 +143,8 @@ def _run_yt_dlp_audio_stt(video_id: str, groq_api_key: str) -> str | None:
                 )
             return str(result) if result else None
         except Exception as exc:
-            _log.warning("Groq transcription failed for %s (Strategy 3): %s", video_id, exc)
+            _log.warning("Groq transcription failed for %s (Strategy 3): %s: %s",
+                         video_id, type(exc).__name__, exc)
             return None
 
 
@@ -249,7 +250,7 @@ async def extract(url: str) -> ExtractedContent:
         from app.core.config import settings
 
         stt_text = await asyncio.to_thread(
-            _run_yt_dlp_audio_stt, video_id, settings.groq_api_key
+            _run_pytubefix_audio_stt, video_id, settings.groq_api_key
         )
         if stt_text:
             text = stt_text

@@ -20,7 +20,9 @@ dependencies = [
     "pdfplumber>=0.11",
     "anthropic>=0.40.0",
     "openai>=1.50.0",
+    "groq>=0.11.0",
     "yt-dlp>=2026.8.19",
+    "pytubefix>=8.0.0",
 ]
 
 [dependency-groups]
@@ -35,6 +37,14 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "unit: isolated unit test — no real I/O",
+    "integration: validates real component boundaries",
+    "contract: validates API request/response contracts",
+    "regression: regression guard for a previously fixed bug",
+    "smoke: critical-path smoke test — fast subset of regression",
+    "e2e: end-to-end test requiring the full application running",
+]
 
 [tool.ruff]
 line-length = 100

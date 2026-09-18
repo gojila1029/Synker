@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-from app.adapters.youtube import _extract_video_id, extract
+from app.adapters.youtube import _extract_video_id, _run_pytubefix_audio_stt, extract
 
 
 def test_extract_video_id_watch_url():
@@ -81,7 +81,7 @@ async def test_no_transcript():
     with (
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
-        patch("app.adapters.youtube._run_yt_dlp_audio_stt", return_value=None),
+        patch("app.adapters.youtube._run_pytubefix_audio_stt", return_value=None),
         patch(
             "app.adapters.youtube._fetch_meta",
             return_value={"title": "Test", "author_name": None},
@@ -144,7 +144,7 @@ async def test_module_not_installed():
     with (
         patch.dict(sys.modules, {"youtube_transcript_api": None}),
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
-        patch("app.adapters.youtube._run_yt_dlp_audio_stt", return_value=None),
+        patch("app.adapters.youtube._run_pytubefix_audio_stt", return_value=None),
         patch(
             "app.adapters.youtube._fetch_meta",
             return_value={"title": "Test", "author_name": None},
@@ -158,28 +158,38 @@ async def test_module_not_installed():
 # ── TDD: _run_yt_dlp_audio_stt (Groq Whisper STT — Strategy 3) ───────────────
 
 
-def _fake_yt_dlp(monkeypatch, *, create_file: bool = True, raise_exc=None):
-    class _YDL:
-        def __init__(self, opts):
-            self._opts = opts
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-        def download(self, urls):
+def _fake_pytubefix(monkeypatch, *, create_file: bool = True, raise_exc=None):
+    """Fake pytubefix.YouTube for Strategy 3 tests."""
+    class _Stream:
+        def download(self, output_path, filename):
             if raise_exc:
                 raise raise_exc
             if create_file:
-                tmpdir = os.path.dirname(self._opts["outtmpl"])
-                open(os.path.join(tmpdir, "audio.m4a"), "w").close()
+                open(os.path.join(output_path, filename), "w").close()
+
+    class _Streams:
+        def filter(self, only_audio):
+            return self
+
+        def order_by(self, abr):
+            return self
+
+        def last(self):
+            if raise_exc and isinstance(raise_exc, type) and raise_exc.__name__ == "NoStream":
+                return None
+            return _Stream()
+
+    class _YouTube:
+        def __init__(self, url):
+            self.url = url
+            if raise_exc and not isinstance(raise_exc, type):
+                raise raise_exc
+            self.streams = _Streams()
 
     monkeypatch.setitem(
         sys.modules,
-        "yt_dlp",
-        type("M", (), {"YoutubeDL": staticmethod(lambda opts: _YDL(opts))})(),
+        "pytubefix",
+        type("M", (), {"YouTube": staticmethod(lambda url: _YouTube(url))})(),
     )
 
 
@@ -209,51 +219,69 @@ import os  # noqa: E402 — needed by helpers above
 from app.adapters.youtube import (  # noqa: E402
     YoutubeAdapter,
     _fetch_meta,
-    _run_yt_dlp_audio_stt,
     _run_yt_dlp_subs,
     _vtt_to_text,
 )
 
 
 def test_stt_returns_transcript_on_success(monkeypatch):
-    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_pytubefix(monkeypatch, create_file=True)
     _fake_groq(monkeypatch, text="Hello STT world")
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") == "Hello STT world"
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") == "Hello STT world"
 
 
 def test_stt_returns_none_for_empty_api_key(monkeypatch):
-    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_pytubefix(monkeypatch, create_file=True)
     _fake_groq(monkeypatch)
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "") is None
 
 
-def test_stt_returns_none_when_yt_dlp_missing(monkeypatch):
-    monkeypatch.setitem(sys.modules, "yt_dlp", None)
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+def test_stt_returns_none_when_pytubefix_missing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pytubefix", None)
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+def test_stt_logs_debug_when_pytubefix_missing(monkeypatch, caplog):
+    """Strategy 3 logs debug when pytubefix is not installed."""
+    import logging
+    monkeypatch.setitem(sys.modules, "pytubefix", None)
+    caplog.set_level(logging.DEBUG, logger="synker.youtube")
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert "pytubefix not installed" in caplog.text
 
 
 def test_stt_returns_none_when_download_raises(monkeypatch):
-    _fake_yt_dlp(monkeypatch, create_file=False, raise_exc=RuntimeError("net"))
+    _fake_pytubefix(monkeypatch, create_file=False, raise_exc=RuntimeError("net"))
     _fake_groq(monkeypatch)
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+def test_stt_logs_pytubefix_download_failure(monkeypatch, caplog):
+    """Strategy 3 logs when pytubefix download fails."""
+    _fake_pytubefix(monkeypatch, create_file=False, raise_exc=RuntimeError("IP blocked"))
+    _fake_groq(monkeypatch)
+    import logging
+    caplog.set_level(logging.WARNING, logger="synker.youtube")
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert "IP blocked" in caplog.text or "pytubefix audio download failed" in caplog.text
 
 
 def test_stt_returns_none_when_no_file_created(monkeypatch):
-    _fake_yt_dlp(monkeypatch, create_file=False)
+    _fake_pytubefix(monkeypatch, create_file=False)
     _fake_groq(monkeypatch)
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
 
 
 def test_stt_returns_none_when_groq_missing(monkeypatch):
-    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_pytubefix(monkeypatch, create_file=True)
     monkeypatch.setitem(sys.modules, "groq", None)
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
 
 
 def test_stt_returns_none_when_groq_api_raises(monkeypatch):
-    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_pytubefix(monkeypatch, create_file=True)
     _fake_groq(monkeypatch, raise_exc=RuntimeError("quota"))
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
 
 
 # ── TDD: _vtt_to_text ─────────────────────────────────────────────────────────
@@ -362,22 +390,48 @@ def test_run_yt_dlp_subs_logs_download_failure(monkeypatch, caplog):
     assert "IP blocked" in caplog.text or "yt-dlp auto-subs download failed" in caplog.text
 
 
-def test_run_yt_dlp_audio_stt_logs_missing_api_key(monkeypatch, caplog):
+def test_run_pytubefix_audio_stt_logs_missing_api_key(monkeypatch, caplog):
     """Strategy 3 logs when GROQ_API_KEY is missing (debug level)."""
     import logging
     caplog.set_level(logging.DEBUG, logger="synker.youtube")
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "") is None
     assert "GROQ_API_KEY not configured" in caplog.text
 
 
-def test_run_yt_dlp_audio_stt_logs_groq_failure(monkeypatch, caplog):
+def test_run_pytubefix_audio_stt_logs_groq_failure(monkeypatch, caplog):
     """Strategy 3 logs when Groq transcription fails."""
-    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_pytubefix(monkeypatch, create_file=True)
     _fake_groq(monkeypatch, raise_exc=RuntimeError("quota exceeded"))
     import logging
     caplog.set_level(logging.WARNING, logger="synker.youtube")
-    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
     assert "quota exceeded" in caplog.text or "Groq transcription failed" in caplog.text
+
+
+def test_stt_no_audio_stream_available(monkeypatch, caplog):
+    """When pytubefix finds no audio stream, Strategy 3 returns None with a warning log."""
+    class _NoStream:
+        def filter(self, only_audio):
+            return self
+        def order_by(self, abr):
+            return self
+        def last(self):
+            return None
+
+    class _YouTube:
+        def __init__(self, url):
+            self.streams = _NoStream()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "pytubefix",
+        type("M", (), {"YouTube": staticmethod(lambda url: _YouTube(url))})(),
+    )
+    _fake_groq(monkeypatch)
+    import logging
+    caplog.set_level(logging.WARNING, logger="synker.youtube")
+    assert _run_pytubefix_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert "No audio stream found" in caplog.text
 
 
 # ── TDD: _fetch_meta error path ───────────────────────────────────────────────
@@ -420,7 +474,7 @@ async def test_strategy1_tries_auto_generated_when_manual_not_found():
     with (
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
-        patch("app.adapters.youtube._run_yt_dlp_audio_stt", return_value=None),
+        patch("app.adapters.youtube._run_pytubefix_audio_stt", return_value=None),
         patch(
             "app.adapters.youtube._fetch_meta",
             return_value={"title": "Test Video", "author_name": "Test Channel"},
@@ -450,7 +504,7 @@ async def test_strategy1_generic_exception_falls_through_to_strategy3():
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
         patch(
-            "app.adapters.youtube._run_yt_dlp_audio_stt",
+            "app.adapters.youtube._run_pytubefix_audio_stt",
             return_value="Fallback transcript",
         ),
         patch(
@@ -478,7 +532,7 @@ async def test_strategy3_groq_stt_used_when_strategies_1_and_2_fail():
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
         patch(
-            "app.adapters.youtube._run_yt_dlp_audio_stt",
+            "app.adapters.youtube._run_pytubefix_audio_stt",
             return_value="Groq STT transcript",
         ),
         patch(
