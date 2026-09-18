@@ -7,7 +7,7 @@ import {
   LayoutDashboard, Globe, CheckSquare, Cpu, BookOpen, FolderOpen, Settings,
   RefreshCw, Play, ChevronDown, ChevronRight, Tag, Shield, AlertTriangle,
   CheckCircle2, XCircle, Clock, FileText, Link2, Zap, Plus, Trash2, Eye, EyeOff,
-  Youtube, File, FolderClosed, Search, ArrowRight, X, Eye, EyeOff,
+  Youtube, File, FolderClosed, Search, ArrowRight, X,
   GitMerge, SkipForward, Wifi, WifiOff, RotateCcw, Activity,
 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
