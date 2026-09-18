@@ -586,7 +586,11 @@ async def test_strategy1_ip_block_detection(caplog):
     import logging
     caplog.set_level(logging.WARNING, logger="synker.youtube")
 
-    ip_block_error = "YouTube is blocking requests from your IP. This is most likely caused by: You are doing requests from an IP belonging to a cloud provider (like AWS, Google Cloud Platform, Azure, etc.)."
+    ip_block_error = (
+        "YouTube is blocking requests from your IP. This is most likely caused by:"
+        " You are doing requests from an IP belonging to a cloud provider"
+        " (like AWS, Google Cloud Platform, Azure, etc.)."
+    )
 
     with (
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
@@ -651,7 +655,10 @@ async def test_all_strategies_fail_with_ip_block_message():
         )
         result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
 
-    assert result.error == "YouTube content cannot be extracted on this deployment (IP-blocked by CDN). Transcript unavailable."
+    assert result.error == (
+        "YouTube content cannot be extracted on this deployment"
+        " (IP-blocked by CDN). Transcript unavailable."
+    )
     assert result.text == ""
 
 
@@ -666,7 +673,7 @@ async def test_strategy2_logs_elapsed_time(caplog):
         patch(
             "app.adapters.youtube._run_yt_dlp_subs",
             return_value=None,
-        ) as mock_yt_dlp,
+        ),
         patch("app.adapters.youtube._run_pytubefix_audio_stt", return_value=None),
         patch(
             "app.adapters.youtube._fetch_meta",
