@@ -936,6 +936,10 @@ function CandidateApprovalScreen() {
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
+  // AC-014, AC-015, AC-016: Helper to check if a candidate has been scored
+  const isScoredCandidate = (c: Candidate): boolean =>
+    c.qualityScore > 0 || c.confidenceScore > 0;
+
   const toggleExpand = (id: string) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleSelect = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const pending = (candidates ?? []).filter((c) => c.status === "pending");
@@ -1031,23 +1035,45 @@ function CandidateApprovalScreen() {
                             </div>
 
                             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 mt-3">
-                              {[
-                                { label: "Quality", value: c.qualityScore, warn: c.qualityScore < 60 },
-                                { label: "Confidence", value: c.confidenceScore, warn: false },
-                                { label: "Duplicate risk", value: c.duplicateScore, warn: c.duplicateScore > 50 },
-                              ].map(({ label, value, warn }) => (
-                                <div key={label} className="flex items-center gap-1.5">
-                                  <span className="text-xs text-slate-400">{label}</span>
-                                  <div className="flex items-center gap-1">
-                                    <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                                      <div className={`h-full rounded-full ${warn ? "bg-amber-400" : "bg-blue-400"}`} style={{ width: `${value}%` }} />
+                              {isScoredCandidate(c) ? (
+                                <>
+                                  {[
+                                    { label: "Quality", value: c.qualityScore, warn: c.qualityScore < 60 },
+                                    { label: "Confidence", value: c.confidenceScore, warn: false },
+                                    { label: "Duplicate risk", value: c.duplicateScore, warn: c.duplicateScore > 50 },
+                                  ].map(({ label, value, warn }) => (
+                                    <div key={label} className="flex items-center gap-1.5">
+                                      <span className="text-xs text-slate-400">{label}</span>
+                                      <div className="flex items-center gap-1">
+                                        <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                          <div className={`h-full rounded-full ${warn ? "bg-amber-400" : "bg-blue-400"}`} style={{ width: `${value}%` }} />
+                                        </div>
+                                        <span className="text-xs font-medium text-slate-600">{value}</span>
+                                      </div>
                                     </div>
-                                    <span className="text-xs font-medium text-slate-600">{value}</span>
+                                  ))}
+                                  <span className="text-xs text-slate-400">~{c.expectedNotes} notes</span>
+                                  <span className="text-xs text-slate-400">~{c.estimatedTokens.toLocaleString()} tokens</span>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-slate-400">Quality</span>
+                                    <span className="text-xs font-medium text-slate-400">—</span>
                                   </div>
-                                </div>
-                              ))}
-                              <span className="text-xs text-slate-400">~{c.expectedNotes} notes</span>
-                              <span className="text-xs text-slate-400">~{c.estimatedTokens.toLocaleString()} tokens</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-slate-400">Confidence</span>
+                                    <span className="text-xs font-medium text-slate-400">—</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-slate-400">Duplicate risk</span>
+                                    <span className="text-xs font-medium text-slate-400">—</span>
+                                  </div>
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200">
+                                    <span className="text-xs font-medium text-slate-500">Not scored</span>
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                           <button onClick={() => toggleExpand(c.id)}
@@ -1793,6 +1819,23 @@ export default function App() {
   const [active, setActive] = useState<Screen>("dashboard");
   const [demo, setDemo] = useState(false);
 
+  // AC-011: Read URL on mount and set active screen
+  useEffect(() => {
+    const path = window.location.pathname;
+    const pathToScreen: Record<string, Screen> = {
+      "/approval": "candidates",
+      "/candidates": "candidates",
+      "/sources": "sources",
+      "/jobs": "jobs",
+      "/knowledge": "review",
+      "/vault": "vault",
+      "/settings": "settings",
+      "/dashboard": "dashboard",
+    };
+    const mapped = pathToScreen[path];
+    if (mapped) setActive(mapped);
+  }, []);
+
   useEffect(() => {
     const t = setInterval(() => setDemo(isDemoMode()), 2000);
     return () => clearInterval(t);
@@ -1834,12 +1877,29 @@ export default function App() {
         {/* Nav */}
         <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
           {navItems.map((item) => (
-            <button key={item.id} onClick={() => setActive(item.id)}
+            <button
+              key={item.id}
+              onClick={() => {
+                setActive(item.id);
+                // AC-013: Update URL when navigating via sidebar
+                const pathMap: Record<Screen, string> = {
+                  dashboard: "/dashboard",
+                  sources: "/sources",
+                  candidates: "/approval",
+                  jobs: "/jobs",
+                  review: "/knowledge",
+                  vault: "/vault",
+                  settings: "/settings",
+                };
+                const path = pathMap[item.id] || "/dashboard";
+                window.history.pushState({}, "", path);
+              }}
               className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm transition-all ${
                 active === item.id
                   ? "bg-blue-600 text-white shadow-sm"
                   : "text-slate-400 hover:text-white hover:bg-slate-700"
-              }`}>
+              }`}
+            >
               <span className="shrink-0">{item.icon}</span>
               <span className="font-medium">{item.label}</span>
             </button>

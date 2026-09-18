@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 
 import httpx
 
@@ -78,11 +79,18 @@ def _run_yt_dlp_subs(video_id: str) -> str | None:
             "quiet": True,
             "no_warnings": True,
         }
+        t0 = time.monotonic()
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
         except Exception as exc:
-            _log.warning("yt-dlp auto-subs download failed for %s: %s", video_id, exc)
+            elapsed = time.monotonic() - t0
+            _log.info(
+                "Strategy 2 (yt-dlp auto-subs) failed for %s after %.2fs: %s",
+                video_id,
+                elapsed,
+                exc,
+            )
             return None
 
         for fname in os.listdir(tmpdir):
@@ -121,7 +129,7 @@ def _run_pytubefix_audio_stt(video_id: str, groq_api_key: str) -> str | None:
                 return None
             audio_stream.download(output_path=tmpdir, filename=f"{video_id}.mp4")
         except Exception as exc:
-            _log.warning("pytubefix audio download failed for %s (Strategy 3): %s: %s",
+            _log.info("Strategy 3 (pytubefix audio_download) failed for %s: %s: %s",
                          video_id, type(exc).__name__, exc)
             return None
 
@@ -132,7 +140,7 @@ def _run_pytubefix_audio_stt(video_id: str, groq_api_key: str) -> str | None:
         audio_path = os.path.join(tmpdir, audio_files[0])
 
         try:
-            from groq import Groq  # type: ignore[import-untyped]
+            from groq import Groq  # type: ignore[import-untyped, unused-ignore]
 
             client = Groq(api_key=groq_api_key)
             with open(audio_path, "rb") as f:
@@ -143,18 +151,23 @@ def _run_pytubefix_audio_stt(video_id: str, groq_api_key: str) -> str | None:
                 )
             return str(result) if result else None
         except Exception as exc:
-            _log.warning("Groq transcription failed for %s (Strategy 3): %s: %s",
+            _log.info("Strategy 3 (transcription) failed for %s: %s: %s",
                          video_id, type(exc).__name__, exc)
             return None
 
 
-async def _fetch_meta(url: str) -> dict:
+async def _fetch_meta(url: str) -> dict[str, object]:
     async with httpx.AsyncClient(timeout=30.0) as client:
         try:
             resp = await client.get(_OEMBED.format(url=url))
             resp.raise_for_status()
-            return resp.json()
-        except httpx.HTTPError:
+            data = resp.json()
+            if isinstance(data, dict):
+                return data
+            return {}
+        except httpx.HTTPError as exc:
+            video_id = _extract_video_id(url) or "unknown"
+            _log.warning("oEmbed metadata fetch failed for %s: %s", video_id, exc)
             return {}
 
 
@@ -174,12 +187,13 @@ async def extract(url: str) -> ExtractedContent:
         )
 
     text: str = ""
-    timestamps: list[dict] = []
+    timestamps: list[dict[str, object]] = []
     transcript_error: str = ""
+    ip_blocked = False
 
     # ── Strategy 1: youtube-transcript-api (v1.0+) ──────────────────────────
     try:
-        from youtube_transcript_api import (  # type: ignore[import-untyped]
+        from youtube_transcript_api import (  # type: ignore[import-untyped, unused-ignore]
             NoTranscriptFound,
             TranscriptsDisabled,
             YouTubeTranscriptApi,
@@ -236,10 +250,20 @@ async def extract(url: str) -> ExtractedContent:
     except TranscriptsDisabled:
         transcript_error = f"Transcripts disabled for {video_id}"
     except Exception as exc:
-        transcript_error = f"Transcript fetch error: {exc}"
+        exc_str = str(exc)
+        if (
+            "IP belonging to a cloud provider" in exc_str
+            or "blocking requests from your IP" in exc_str
+        ):
+            ip_blocked = True
+            transcript_error = exc_str
+        else:
+            transcript_error = f"Transcript fetch error: {exc}"
 
     # ── Strategy 2: yt-dlp auto-generated subtitles ─────────────────────────
     if not text and transcript_error:
+        if ip_blocked:
+            _log.info("Strategy 1 IP-blocked for %s; attempting Strategy 2 (yt-dlp)", video_id)
         auto_text = await asyncio.to_thread(_run_yt_dlp_subs, video_id)
         if auto_text:
             text = auto_text
@@ -257,12 +281,26 @@ async def extract(url: str) -> ExtractedContent:
             transcript_error = ""
 
     meta = await _fetch_meta(url)
-    title = meta.get("title") or f"YouTube video {video_id}"
-    author = meta.get("author_name")
+    title = str(meta.get("title") or "")
+    if not title:
+        _log.warning("oEmbed returned no title for %s; using fallback", video_id)
+        title = f"YouTube video {video_id}"
+    author = str(meta.get("author_name") or "")
 
     if not text:
-        final_error = transcript_error or f"No transcript available for {video_id}"
-        _log.warning("All extraction strategies failed for %s: %s", video_id, final_error)
+        if ip_blocked:
+            final_error = (
+                "YouTube content cannot be extracted on this deployment "
+                "(IP-blocked by CDN). Transcript unavailable."
+            )
+        else:
+            final_error = transcript_error or f"No transcript available for {video_id}"
+        _log.warning(
+            "All extraction strategies failed for %s (ip_blocked=%s): %s",
+            video_id,
+            ip_blocked,
+            final_error,
+        )
         return ExtractedContent(
             text="",
             title=title,
