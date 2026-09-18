@@ -21,7 +21,8 @@ async def list_sources(
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
-        """SELECT id, type, source_scope, title, url, topic_id, status, schedule, added_at
+        """SELECT id, type, source_scope, title, url, topic_id, status, schedule, added_at,
+                  keyword, discovery_mode, discovery_limit
            FROM sources WHERE user_id=$1 ORDER BY added_at DESC""",
         uuid.UUID(user_id),
     )
@@ -36,6 +37,9 @@ async def list_sources(
             "status": r["status"],
             "addedAt": r["added_at"].isoformat() if r["added_at"] else None,
             "schedule": r["schedule"],
+            "keyword": r["keyword"],
+            "discoveryMode": r["discovery_mode"],
+            "discoveryLimit": r["discovery_limit"],
         }
         for r in rows
     ]
@@ -54,9 +58,11 @@ async def add_source(
     # platform homepage. Classify it server-side instead of trusting body.
     source_scope = classify_source_scope(body.type, body.url)
     row = await db.fetchrow(
-        """INSERT INTO sources (user_id, topic_id, type, source_scope, title, url, schedule)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
-           RETURNING id, type, source_scope, title, url, topic_id, status, schedule, added_at""",
+        """INSERT INTO sources (user_id, topic_id, type, source_scope, title, url,
+                               schedule, keyword, discovery_mode, discovery_limit)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+           RETURNING id, type, source_scope, title, url, topic_id, status, schedule,
+                     added_at, keyword, discovery_mode, discovery_limit""",
         uuid.UUID(user_id),
         uuid.UUID(topic_id) if topic_id else None,
         body.type,
@@ -64,11 +70,25 @@ async def add_source(
         body.title,
         body.url,
         None,
+        body.keyword,
+        body.discovery_mode,
+        body.discovery_limit,
     )
     if row is None:
-        return {"id": "", "type": body.type, "sourceScope": source_scope,
-                "title": body.title, "url": body.url, "topicId": topic_id,
-                "status": "queued", "addedAt": None, "schedule": None}
+        return {
+            "id": "",
+            "type": body.type,
+            "sourceScope": source_scope,
+            "title": body.title,
+            "url": body.url,
+            "topicId": topic_id,
+            "status": "queued",
+            "addedAt": None,
+            "schedule": None,
+            "keyword": body.keyword,
+            "discoveryMode": body.discovery_mode,
+            "discoveryLimit": body.discovery_limit,
+        }
     return {
         "id": str(row["id"]),
         "type": row["type"],
@@ -79,6 +99,9 @@ async def add_source(
         "status": row["status"],
         "addedAt": row["added_at"].isoformat() if row["added_at"] else None,
         "schedule": row["schedule"],
+        "keyword": row["keyword"],
+        "discoveryMode": row["discovery_mode"],
+        "discoveryLimit": row["discovery_limit"],
     }
 
 
@@ -94,7 +117,8 @@ async def reset_source(
     except ValueError:
         return {"reset": source_id}
     row = await db.fetchrow(
-        "UPDATE sources SET status='queued', updated_at=now() WHERE id=$1 AND user_id=$2 RETURNING id, status",
+        "UPDATE sources SET status='queued', updated_at=now() "
+        "WHERE id=$1 AND user_id=$2 RETURNING id, status",
         sid, uid,
     )
     return {"reset": source_id, "status": row["status"] if row else "not_found"}

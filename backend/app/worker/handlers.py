@@ -217,13 +217,248 @@ async def _discover_videos_for_source(
     return discovered_count
 
 
+async def _discover_youtube_keyword(
+    pool: Any, user_id: Any, source: dict[str, Any]
+) -> int | None:
+    """Discover YouTube videos via keyword search."""
+    from app.adapters.youtube_search import search_youtube
+
+    keyword = source.get("keyword")
+    discovery_limit = source.get("discovery_limit", 25)
+
+    if not keyword:
+        return None
+
+    result = await search_youtube(keyword, limit=discovery_limit)
+    if result.error or not result.results:
+        reason = result.error or "No results found"
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO processing_log
+                   (user_id, entity_type, entity_id, action, details)
+                   VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                user_id,
+                source["id"],
+                json.dumps({"reason": reason}),
+            )
+        return 0
+
+    discovered_count = 0
+    for search_result in result.results:
+        video_url = search_result.url
+        video_extracted: ExtractedContent | None = None
+        try:
+            video_extracted = await adapter_extract("youtube", video_url)
+        except Exception as exc:
+            video_extracted = ExtractedContent(text="", title="", error=str(exc))
+
+        video_domain = urlparse(video_url).netloc if video_url else ""
+        fields = _candidate_fields(video_extracted, search_result.title, video_domain)
+
+        # Create candidate with status=pending (not auto-approved)
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+                user_id,
+                video_url,
+            )
+            if existing:
+                continue
+
+            await conn.execute(
+                """INSERT INTO candidates
+                   (user_id, source_id, title, source_info, domain, published_at,
+                    recommendation, quality_score, confidence_score,
+                    duplicate_score, expected_notes, estimated_tokens,
+                    summary, extracted_topics, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                           $12, $13, $14, $15)""",
+                user_id,
+                source["id"],
+                fields["title"],
+                video_url,
+                video_domain,
+                fields["published_at"],
+                fields["recommendation"],
+                fields["quality_score"],
+                fields["confidence_score"],
+                0.05,
+                1,
+                max(1000, fields["word_count"] * 2),
+                fields["summary"],
+                [],
+                "pending",
+            )
+
+            if video_extracted and video_extracted.text and not video_extracted.error:
+                timestamps_json = (
+                    json.dumps(video_extracted.timestamps)
+                    if video_extracted.timestamps
+                    else None
+                )
+                await conn.execute(
+                    """INSERT INTO source_extractions
+                       (source_id, user_id, source_url, text, title, author,
+                        published_at, timestamps, word_count)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    source["id"],
+                    user_id,
+                    video_url,
+                    video_extracted.text,
+                    video_extracted.title,
+                    video_extracted.author,
+                    video_extracted.published_at,
+                    timestamps_json,
+                    video_extracted.word_count,
+                )
+
+        discovered_count += 1
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_log
+               (user_id, entity_type, entity_id, action, details)
+               VALUES ($1, 'source', $2, 'discovery_completed', $3::jsonb)""",
+            user_id,
+            source["id"],
+            json.dumps({"found": len(result.results), "created": discovered_count}),
+        )
+        await conn.execute(
+            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+            source["id"],
+            user_id,
+        )
+    return discovered_count
+
+
+async def _discover_website_keyword(
+    pool: Any, user_id: Any, source: dict[str, Any]
+) -> int | None:
+    """Discover websites via keyword search."""
+    from app.adapters.web_search import search_websites
+
+    keyword = source.get("keyword")
+    discovery_limit = source.get("discovery_limit", 25)
+
+    if not keyword:
+        return None
+
+    result = await search_websites(keyword, limit=discovery_limit)
+    if result.error or not result.results:
+        reason = result.error or "No results found"
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO processing_log
+                   (user_id, entity_type, entity_id, action, details)
+                   VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                user_id,
+                source["id"],
+                json.dumps({"reason": reason}),
+            )
+        return 0
+
+    discovered_count = 0
+    for search_result in result.results:
+        website_url = search_result.url
+        website_extracted: ExtractedContent | None = None
+        try:
+            website_extracted = await adapter_extract("web", website_url)
+        except Exception as exc:
+            website_extracted = ExtractedContent(text="", title="", error=str(exc))
+
+        website_domain = urlparse(website_url).netloc if website_url else ""
+        fields = _candidate_fields(website_extracted, search_result.title, website_domain)
+
+        # Normalize URL for dedup
+        from app.adapters.web_search import _normalize_url
+
+        normalized_url = _normalize_url(website_url)
+
+        # Create candidate with status=pending (not auto-approved)
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+                user_id,
+                normalized_url,
+            )
+            if existing:
+                continue
+
+            await conn.execute(
+                """INSERT INTO candidates
+                   (user_id, source_id, title, source_info, domain, published_at,
+                    recommendation, quality_score, confidence_score,
+                    duplicate_score, expected_notes, estimated_tokens,
+                    summary, extracted_topics, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                           $12, $13, $14, $15)""",
+                user_id,
+                source["id"],
+                fields["title"],
+                normalized_url,
+                website_domain,
+                fields["published_at"],
+                fields["recommendation"],
+                fields["quality_score"],
+                fields["confidence_score"],
+                0.05,
+                1,
+                max(1000, fields["word_count"] * 2),
+                fields["summary"],
+                [],
+                "pending",
+            )
+
+            if website_extracted and website_extracted.text and not website_extracted.error:
+                timestamps_json = (
+                    json.dumps(website_extracted.timestamps)
+                    if website_extracted.timestamps
+                    else None
+                )
+                await conn.execute(
+                    """INSERT INTO source_extractions
+                       (source_id, user_id, source_url, text, title, author,
+                        published_at, timestamps, word_count)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    source["id"],
+                    user_id,
+                    normalized_url,
+                    website_extracted.text,
+                    website_extracted.title,
+                    website_extracted.author,
+                    website_extracted.published_at,
+                    timestamps_json,
+                    website_extracted.word_count,
+                )
+
+        discovered_count += 1
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_log
+               (user_id, entity_type, entity_id, action, details)
+               VALUES ($1, 'source', $2, 'discovery_completed', $3::jsonb)""",
+            user_id,
+            source["id"],
+            json.dumps({"found": len(result.results), "created": discovered_count}),
+        )
+        await conn.execute(
+            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+            source["id"],
+            user_id,
+        )
+    return discovered_count
+
+
 async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any) -> str:
     """Discovery: scan queued sources, extract metadata, create candidate records.
 
-    A source classified as discovery_provider (a channel/playlist URL — see
-    app/adapters/classify.py) is enumerated via _discover_videos_for_source
-    into one candidate per real video, instead of the single source itself
-    becoming a misleading "Unknown" candidate."""
+    Routes sources based on discovery_mode:
+    - 'keyword' → YouTube keyword search
+    - 'web_keyword' → Website keyword search
+    - 'channel_playlist' → Channel/playlist enumeration
+    - 'single' or None → Direct extraction
+    """
     user_id = job["user_id"]
     created = 0
     skipped_discovery_ids: list[Any] = []
@@ -231,7 +466,9 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
     try:
         async with pool.acquire() as conn:
             sources = await conn.fetch(
-                "SELECT id, type, title, url, source_scope FROM sources WHERE user_id=$1",
+                """SELECT id, type, title, url, source_scope, discovery_mode,
+                          keyword, discovery_limit
+                   FROM sources WHERE user_id=$1""",
                 user_id,
             )
 
@@ -244,21 +481,39 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             try:
                 await progress(10 + 70 * (i + 1) // total)
 
+                discovery_mode = source.get("discovery_mode")
                 source_type = source["type"] or "web"
                 source_url = source["url"]
 
-                if source["source_scope"] == "discovery_provider":
-                    discovered = await _discover_videos_for_source(pool, user_id, source)
+                # Route by discovery_mode
+                if discovery_mode == "keyword":
+                    discovered = await _discover_youtube_keyword(pool, user_id, source)
                     if discovered is None:
-                        # Skipped (unsupported/failed) -- already marked
-                        # 'failed' inside the helper. Exclude from the
-                        # final 'done' batch below so that status is not
-                        # clobbered back to done.
                         skipped_discovery_ids.append(source["id"])
                     else:
                         created += discovered
                     continue
 
+                if discovery_mode == "web_keyword":
+                    discovered = await _discover_website_keyword(pool, user_id, source)
+                    if discovered is None:
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        created += discovered
+                    continue
+
+                if (
+                    source["source_scope"] == "discovery_provider"
+                    or discovery_mode == "channel_playlist"
+                ):
+                    discovered = await _discover_videos_for_source(pool, user_id, source)
+                    if discovered is None:
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        created += discovered
+                    continue
+
+                # Direct extraction path (single or None)
                 extracted = None
                 try:
                     extracted = await adapter_extract(source_type, source_url)
@@ -397,7 +652,8 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             ai_settings = ai_row["ai_providers"] if ai_row else {}
 
             existing_rows = await conn.fetch(
-                "SELECT title FROM notes WHERE user_id=$1 AND status='approved' ORDER BY generated_at DESC LIMIT 100",
+                "SELECT title FROM notes WHERE user_id=$1 AND status='approved' "
+                "ORDER BY generated_at DESC LIMIT 100",
                 user_id,
             )
 

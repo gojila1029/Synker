@@ -392,10 +392,36 @@ function SourcesScreen() {
   const { data: topics, refetch: refetchTopics } = useApi(api.topics.list, seedTopics);
   const [filter, setFilter] = useState<"all" | Source["type"]>("all");
   const [showModal, setShowModal] = useState(false);
-  const [newUrl, setNewUrl] = useState("");
-  const [newType, setNewType] = useState<Source["type"]>("web");
-  const [newTopic, setNewTopic] = useState("");
   const [newTopicLabel, setNewTopicLabel] = useState("");
+
+  // YouTube Track B state
+  const [youtubeMode, setYoutubeMode] = useState<"find" | "monitor">("find");
+  const [youtubeQuery, setYoutubeQuery] = useState("");
+  const [youtubeLimit, setYoutubeLimit] = useState(10);
+  const [youtubeSearchResults, setYoutubeSearchResults] = useState<YouTubeSearchItem[]>([]);
+  const [youtubeSelected, setYoutubeSelected] = useState<Set<string>>(new Set());
+  const [youtubeSearching, setYoutubeSearching] = useState(false);
+  const [youtubeBatchProcessing, setYoutubeBatchProcessing] = useState<Map<string, string>>(new Map());
+  const youtubeSearchAbortRef = useRef<AbortController | null>(null);
+
+  // YouTube Track A state
+  const [youtubeTrackAMode, setYoutubeTrackAMode] = useState<"channel" | "keyword">("channel");
+  const [youtubeTrackAUrl, setYoutubeTrackAUrl] = useState("");
+  const [youtubeTrackAKeyword, setYoutubeTrackAKeyword] = useState("");
+  const [youtubeTrackALimit, setYoutubeTrackALimit] = useState(25);
+  const [youtubeTrackATopic, setYoutubeTrackATopic] = useState("");
+  const [youtubeTrackASaving, setYoutubeTrackASaving] = useState(false);
+
+  // Website state
+  const [websiteKeyword, setWebsiteKeyword] = useState("");
+  const [websiteLimit, setWebsiteLimit] = useState(5);
+  const [websiteTopic, setWebsiteTopic] = useState("");
+  const [websiteSaving, setWebsiteSaving] = useState(false);
+
+  // AI parse state
+  const [youtubeParseMessage, setYoutubeParseMessage] = useState("");
+  const [youtubeParsePending, setYoutubeParsePending] = useState(false);
+  const [youtubeParsedConfidence, setYoutubeParsedConfidence] = useState<number | null>(null);
 
   const filtered = (sources ?? []).filter((s) => filter === "all" || s.type === filter);
   const tabs: { key: "all" | Source["type"]; label: string }[] = [
@@ -403,16 +429,116 @@ function SourcesScreen() {
     { key: "web", label: "Web" }, { key: "pdf", label: "PDF" }, { key: "local", label: "Local Folder" },
   ];
 
-  const [adding, setAdding] = useState(false);
-  async function handleAddSource() {
-    if (!newUrl || adding) return;
-    setAdding(true);
+  async function handleYoutubeSearch() {
+    if (!youtubeQuery.trim() || youtubeSearching) return;
+    youtubeSearchAbortRef.current = new AbortController();
+    setYoutubeSearching(true);
+    setYoutubeSelected(new Set());
     try {
-      await api.sources.add({ url: newUrl, type: newType, topicId: newTopic || null });
-      toast.success("Source added successfully");
-      setShowModal(false); setNewUrl(""); refetch();
-    } catch (e) { toast.error(`Failed to add source: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setAdding(false); }
+      const response = await api.youtube.search(youtubeQuery.trim(), youtubeLimit);
+      setYoutubeSearchResults(response.results || []);
+      if (response.error) toast.error(`Search failed: ${response.error}`);
+    } catch (e) {
+      toast.error(`Search error: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setYoutubeSearching(false);
+    }
+  }
+
+  async function handleYoutubeParseIntent() {
+    if (!youtubeParseMessage.trim() || youtubeParsePending) return;
+    setYoutubeParsePending(true);
+    try {
+      const response = await api.youtube.parseIntent(youtubeParseMessage.trim());
+      setYoutubeQuery(response.search_query);
+      setYoutubeLimit(response.limit);
+      setYoutubeParsedConfidence(response.confidence);
+      if (response.confidence < 0.6) {
+        toast.warning("Low confidence — please review the parsed query");
+      }
+      setYoutubeSearchResults([]);
+      setYoutubeSelected(new Set());
+    } catch (e) {
+      toast.error(`Parse failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setYoutubeParsePending(false);
+    }
+  }
+
+  async function handleCreateNotesFromSelected() {
+    if (youtubeSelected.size === 0 || youtubeBatchProcessing.size > 0) return;
+    const urls = Array.from(youtubeSelected).map((videoId) => {
+      const result = youtubeSearchResults.find((r) => r.video_id === videoId);
+      return result?.url || "";
+    }).filter(Boolean as any);
+
+    const processing = new Map<string, string>();
+    urls.forEach((url) => processing.set(url, "PROCESSING"));
+    setYoutubeBatchProcessing(processing);
+
+    try {
+      const response = await api.youtube.createNotesBatch(urls);
+      for (const item of response.results) {
+        processing.set(item.url, item.status);
+      }
+      setYoutubeBatchProcessing(new Map(processing));
+      toast.success(`Batch processing complete: ${response.results.filter((r) => r.status === "SUCCESS").length} created`);
+    } catch (e) {
+      toast.error(`Batch failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    }
+  }
+
+  async function handleYoutubeTrackASave() {
+    const url = youtubeTrackAMode === "channel" ? youtubeTrackAUrl.trim() : "";
+    const keyword = youtubeTrackAMode === "keyword" ? youtubeTrackAKeyword.trim() : "";
+    if (!url && !keyword) return;
+    if (youtubeTrackASaving) return;
+
+    setYoutubeTrackASaving(true);
+    try {
+      await api.sources.add({
+        url: url,
+        type: "youtube",
+        topicId: youtubeTrackATopic || null,
+        discovery_mode: youtubeTrackAMode === "channel" ? "channel_playlist" : "keyword",
+        keyword: keyword,
+        discovery_limit: youtubeTrackALimit,
+      });
+      toast.success("YouTube source saved");
+      setYoutubeTrackAUrl("");
+      setYoutubeTrackAKeyword("");
+      setYoutubeTrackATopic("");
+      setYoutubeTrackALimit(25);
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to save: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setYoutubeTrackASaving(false);
+    }
+  }
+
+  async function handleWebsiteSave() {
+    if (!websiteKeyword.trim() || websiteSaving) return;
+    setWebsiteSaving(true);
+    try {
+      await api.sources.add({
+        url: "",
+        type: "web",
+        topicId: websiteTopic || null,
+        discovery_mode: "web_keyword",
+        keyword: websiteKeyword.trim(),
+        discovery_limit: websiteLimit,
+      });
+      toast.success("Website source saved");
+      setWebsiteKeyword("");
+      setWebsiteTopic("");
+      setWebsiteLimit(5);
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to save: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setWebsiteSaving(false);
+    }
   }
 
   async function handleAddTopic() {
@@ -422,6 +548,16 @@ function SourcesScreen() {
       toast.success(`Topic "${newTopicLabel.trim()}" created`);
       setNewTopicLabel(""); refetchTopics();
     } catch { toast.error("Failed to create topic"); }
+  }
+
+  function toggleYoutubeSelect(videoId: string) {
+    const updated = new Set(youtubeSelected);
+    if (updated.has(videoId)) {
+      updated.delete(videoId);
+    } else {
+      updated.add(videoId);
+    }
+    setYoutubeSelected(updated);
   }
 
   const typeColors: Record<string, string> = { youtube: "text-red-500", pdf: "text-orange-500", local: "text-amber-600", web: "text-slate-500" };
@@ -535,7 +671,7 @@ function SourcesScreen() {
       {/* Add Source Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-slate-200" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Add a Source</h2>
@@ -543,37 +679,247 @@ function SourcesScreen() {
               </div>
               <button onClick={() => setShowModal(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400"><X className="size-4" /></button>
             </div>
-            <div className="space-y-4">
-              <div>
-                <label className="text-xs font-medium text-slate-600 mb-1.5 block">URL or file path</label>
-                <input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://… or /local/path"
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all" />
-                {newType === "youtube" && (
-                  <p className="text-xs text-slate-400 mt-1.5">채널/재생목록 URL을 붙여넣으면 새 영상을 자동으로 찾습니다.</p>
+
+            {/* Source Type Tabs */}
+            <div className="flex gap-1 bg-slate-100 p-1 rounded-lg mb-5 w-fit">
+              {["YouTube", "Website"].map((label) => (
+                <button
+                  key={label}
+                  onClick={() => {
+                    if (label === "YouTube") { setYoutubeParseMessage(""); setYoutubeParsedConfidence(null); }
+                    else { setWebsiteKeyword(""); }
+                  }}
+                  className={`px-3 py-1.5 text-xs font-medium rounded transition-all ${label === "YouTube" && !showModal ? "bg-white text-slate-800 shadow-sm" : label === "Website" && !showModal ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* YouTube Section (Track B + Track A) */}
+            <div className="space-y-4 mb-6">
+              <div className="border-b border-slate-200 pb-4">
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">YouTube: Find & Create Notes</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1.5 block">Natural language query (optional)</label>
+                    <input
+                      value={youtubeParseMessage}
+                      onChange={(e) => setYoutubeParseMessage(e.target.value)}
+                      placeholder="e.g., 'Python tutorials for beginners, max 15 videos'"
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                    />
+                    <button
+                      onClick={handleYoutubeParseIntent}
+                      disabled={youtubeParsePending || !youtubeParseMessage.trim()}
+                      className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {youtubeParsePending ? "Parsing…" : "Parse with AI"}
+                    </button>
+                    {youtubeParsedConfidence !== null && youtubeParsedConfidence < 0.6 && (
+                      <Badge variant="warning" className="mt-2 inline-block">Low confidence — please confirm</Badge>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Search query</label>
+                      <input
+                        value={youtubeQuery}
+                        onChange={(e) => setYoutubeQuery(e.target.value)}
+                        placeholder="Search term"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Limit (1-50)</label>
+                      <input
+                        type="number"
+                        value={youtubeLimit}
+                        onChange={(e) => setYoutubeLimit(Math.max(1, Math.min(50, parseInt(e.target.value) || 10)))}
+                        min="1"
+                        max="50"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleYoutubeSearch}
+                    variant="secondary"
+                    size="sm"
+                    disabled={youtubeSearching || !youtubeQuery.trim()}
+                    className="w-full justify-center"
+                  >
+                    <Search className="size-3" /> {youtubeSearching ? "Searching…" : "Search"}
+                  </Button>
+                </div>
+
+                {youtubeSearchResults.length > 0 && (
+                  <div className="mt-4 space-y-2 max-h-60 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50">
+                    <p className="text-xs font-medium text-slate-600">{youtubeSelected.size} selected</p>
+                    {youtubeSearchResults.map((item) => (
+                      <div key={item.video_id} className="flex items-start gap-2 p-2 bg-white rounded border border-slate-100 hover:border-blue-300 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={youtubeSelected.has(item.video_id)}
+                          onChange={() => toggleYoutubeSelect(item.video_id)}
+                          className="mt-1 rounded"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-slate-800 line-clamp-2">{item.title}</p>
+                          {item.channel && <p className="text-[11px] text-slate-500">{item.channel}</p>}
+                        </div>
+                        {youtubeBatchProcessing.has(item.url) && (
+                          <Badge
+                            variant={youtubeBatchProcessing.get(item.url) === "SUCCESS" ? "success" : youtubeBatchProcessing.get(item.url) === "ALREADY_EXISTS" ? "neutral" : "danger"}
+                            className="shrink-0"
+                          >
+                            {youtubeBatchProcessing.get(item.url) === "PROCESSING" ? "…" : youtubeBatchProcessing.get(item.url)}
+                          </Badge>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {youtubeSelected.size > 0 && (
+                  <Button
+                    onClick={handleCreateNotesFromSelected}
+                    variant="primary"
+                    size="sm"
+                    disabled={youtubeBatchProcessing.size > 0}
+                    className="w-full justify-center mt-3"
+                  >
+                    Create Notes from {youtubeSelected.size} Selected
+                  </Button>
                 )}
               </div>
+
+              <div className="border-b border-slate-200 pb-4">
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">YouTube: Subscribe & Monitor</h3>
+                <div className="space-y-3">
+                  <div className="flex gap-2 bg-slate-50 p-2 rounded-lg">
+                    {["channel", "keyword"].map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => {
+                          setYoutubeTrackAMode(mode as "channel" | "keyword");
+                          setYoutubeTrackAUrl("");
+                          setYoutubeTrackAKeyword("");
+                        }}
+                        className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-all ${youtubeTrackAMode === mode ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                      >
+                        {mode === "channel" ? "Channel/Playlist" : "Keyword"}
+                      </button>
+                    ))}
+                  </div>
+                  {youtubeTrackAMode === "channel" ? (
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Channel or Playlist URL</label>
+                      <input
+                        value={youtubeTrackAUrl}
+                        onChange={(e) => setYoutubeTrackAUrl(e.target.value)}
+                        placeholder="https://youtube.com/@channel or playlist URL"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Keyword</label>
+                      <input
+                        value={youtubeTrackAKeyword}
+                        onChange={(e) => setYoutubeTrackAKeyword(e.target.value)}
+                        placeholder="e.g., Python tutorials"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Limit (1-50)</label>
+                      <input
+                        type="number"
+                        value={youtubeTrackALimit}
+                        onChange={(e) => setYoutubeTrackALimit(Math.max(1, Math.min(50, parseInt(e.target.value) || 25)))}
+                        min="1"
+                        max="50"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                      <select
+                        value={youtubeTrackATopic}
+                        onChange={(e) => setYoutubeTrackATopic(e.target.value)}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                      >
+                        <option value="">Uncategorised</option>
+                        {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleYoutubeTrackASave}
+                    variant="primary"
+                    size="sm"
+                    disabled={youtubeTrackASaving || (!youtubeTrackAUrl && !youtubeTrackAKeyword)}
+                    className="w-full justify-center"
+                  >
+                    {youtubeTrackASaving ? "Saving…" : "Save Source"}
+                  </Button>
+                </div>
+              </div>
+
               <div>
-                <label className="text-xs font-medium text-slate-600 mb-1.5 block">Source type</label>
-                <select value={newType} onChange={(e) => setNewType(e.target.value as Source["type"])}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white">
-                  <option value="web">Website</option>
-                  <option value="youtube">YouTube Video</option>
-                  <option value="pdf">PDF Document</option>
-                  <option value="local">Local Folder</option>
-                </select>
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">Website: Subscribe & Monitor</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1.5 block">Keyword</label>
+                    <input
+                      value={websiteKeyword}
+                      onChange={(e) => setWebsiteKeyword(e.target.value)}
+                      placeholder="e.g., React best practices"
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Limit (1-10)</label>
+                      <input
+                        type="number"
+                        value={websiteLimit}
+                        onChange={(e) => setWebsiteLimit(Math.max(1, Math.min(10, parseInt(e.target.value) || 5)))}
+                        min="1"
+                        max="10"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                      <select
+                        value={websiteTopic}
+                        onChange={(e) => setWebsiteTopic(e.target.value)}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                      >
+                        <option value="">Uncategorised</option>
+                        {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleWebsiteSave}
+                    variant="primary"
+                    size="sm"
+                    disabled={websiteSaving || !websiteKeyword.trim()}
+                    className="w-full justify-center"
+                  >
+                    {websiteSaving ? "Saving…" : "Save Source"}
+                  </Button>
+                </div>
               </div>
-              <div>
-                <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic (optional)</label>
-                <select value={newTopic} onChange={(e) => setNewTopic(e.target.value)}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white">
-                  <option value="">Uncategorised</option>
-                  {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </select>
-              </div>
-              <div className="flex gap-2 pt-1">
-                <Button onClick={() => setShowModal(false)} variant="secondary" className="flex-1 justify-center">Cancel</Button>
-                <Button onClick={handleAddSource} variant="primary" className="flex-1 justify-center" disabled={adding}>{adding ? "Adding…" : "Add Source"}</Button>
-              </div>
+            </div>
+
+            <div className="flex gap-2 pt-4 border-t border-slate-200">
+              <Button onClick={() => setShowModal(false)} variant="secondary" className="flex-1 justify-center">Close</Button>
             </div>
           </div>
         </div>

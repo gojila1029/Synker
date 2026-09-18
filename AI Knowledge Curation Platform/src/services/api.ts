@@ -1,4 +1,4 @@
-﻿import type { DashboardStats, ActivityEvent, Topic, Source, Candidate, Job, Note, VaultNode, VaultFile, Settings } from "../types";
+﻿import type { DashboardStats, ActivityEvent, Topic, Source, Candidate, Job, Note, VaultNode, VaultFile, Settings, YouTubeSearchResponse, ParsedIntent, BatchNoteResponse } from "../types";
 import {
   seedStats, seedActivity, seedTopics, seedSources, seedCandidates,
   seedJobs, seedNotes, seedVaultTree, seedVaultFile, seedSettings,
@@ -45,7 +45,7 @@ async function GET<T>(path: string, fallback: T): Promise<T> {
     return res.json() as Promise<T>;
   } catch (e) {
     if (e instanceof UnauthorizedError) throw e;
-    if (++_failStreak >= 3) _isDemo = true;
+    if (++_failStreak >= 2) _isDemo = true;
     return fallback;
   }
 }
@@ -154,5 +154,16 @@ export const api = {
       "/api/scheduler/status",
       { last_run_at: null, next_run_at: null, is_running: false }
     ),
+  },
+  youtube: {
+    search: (q: string, limit?: number) => GET<YouTubeSearchResponse>(
+      `/api/youtube/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`,
+      { results: [] }
+    ),
+    parseIntent: (message: string) => POST<ParsedIntent>("/api/youtube/parse-intent", { message }),
+    createNotesBatch: (videoUrls: string[]) => POST<BatchNoteResponse>("/api/youtube/notes/batch", { video_urls: videoUrls }),
+  },
+  website: {
+    parseIntent: (message: string) => POST<ParsedIntent>("/api/website/parse-intent", { message }),
   },
 };

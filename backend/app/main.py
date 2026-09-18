@@ -25,6 +25,8 @@ from app.api.routes import (
     sources,
     topics,
     vault,
+    website,
+    youtube,
 )
 from app.core.config import settings
 from app.db.client import close_pool, get_pool
@@ -65,11 +67,12 @@ async def lifespan(app: FastAPI):
     stop = asyncio.Event()
     worker_tasks: list[asyncio.Task[None]] = []
     if settings.worker_enabled:
-        from app.worker.runner import reaper_loop, worker_loop
+        from app.worker.runner import reaper_loop, scheduler_loop, worker_loop
 
         worker_tasks = [
             asyncio.create_task(worker_loop(stop)),
             asyncio.create_task(reaper_loop(stop)),
+            asyncio.create_task(scheduler_loop(stop)),
         ]
         _log.info("Job worker enabled")
 
@@ -125,3 +128,5 @@ app.include_router(notes.router, prefix="/api/notes")
 app.include_router(vault.router, prefix="/api/vault")
 app.include_router(settings_route.router, prefix="/api/settings")
 app.include_router(scheduler.router, prefix="/api/scheduler")
+app.include_router(youtube.router, prefix="/api/youtube")
+app.include_router(website.router, prefix="/api/website")

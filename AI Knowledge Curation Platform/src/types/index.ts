@@ -30,6 +30,42 @@ export interface Source {
   status: "queued" | "processing" | "done" | "failed";
   addedAt: string;
   schedule: string | null;
+  keyword?: string | null;
+  discoveryMode?: "single" | "channel_playlist" | "keyword" | "web_keyword" | null;
+  discoveryLimit?: number;
+}
+
+export interface YouTubeSearchItem {
+  video_id: string;
+  title: string;
+  url: string;
+  channel?: string | null;
+}
+
+export interface YouTubeSearchResponse {
+  results: YouTubeSearchItem[];
+  error?: string | null;
+  errorCode?: string | null;
+}
+
+export interface ParsedIntent {
+  search_query: string;
+  limit: number;
+  confidence: number;
+  fallback_used?: boolean;
+  error?: string | null;
+}
+
+export interface BatchNoteItem {
+  url: string;
+  videoId?: string | null;
+  status: "SUCCESS" | "ALREADY_EXISTS" | "FAILED";
+  error?: string | null;
+  candidateId?: string | null;
+}
+
+export interface BatchNoteResponse {
+  results: BatchNoteItem[];
 }
 
 export interface Candidate {
