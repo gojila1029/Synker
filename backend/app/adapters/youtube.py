@@ -11,6 +11,7 @@ Metadata always comes from the YouTube oEmbed endpoint (no API key required).
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import tempfile
@@ -18,6 +19,8 @@ import tempfile
 import httpx
 
 from app.adapters.base import ExtractedContent, SourceAdapter
+
+_log = logging.getLogger("synker.youtube")
 
 _OEMBED = "https://www.youtube.com/oembed?url={url}&format=json"
 _YT_ID = re.compile(
@@ -78,7 +81,8 @@ def _run_yt_dlp_subs(video_id: str) -> str | None:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
-        except Exception:
+        except Exception as exc:
+            _log.warning("yt-dlp auto-subs download failed for %s: %s", video_id, exc)
             return None
 
         for fname in os.listdir(tmpdir):
@@ -86,7 +90,8 @@ def _run_yt_dlp_subs(video_id: str) -> str | None:
                 try:
                     with open(os.path.join(tmpdir, fname), encoding="utf-8") as f:
                         return _vtt_to_text(f.read())
-                except Exception:
+                except Exception as exc:
+                    _log.warning("yt-dlp VTT read/parse failed for %s: %s", video_id, exc)
                     return None
     return None
 
@@ -98,6 +103,7 @@ def _run_yt_dlp_audio_stt(video_id: str, groq_api_key: str) -> str | None:
     Returns transcript text, or None on any failure (missing deps, network
     error, Groq error). Never raises."""
     if not groq_api_key:
+        _log.debug("Strategy 3 (Groq STT) skipped: GROQ_API_KEY not configured")
         return None
     try:
         import yt_dlp  # type: ignore[import-untyped]
@@ -115,11 +121,13 @@ def _run_yt_dlp_audio_stt(video_id: str, groq_api_key: str) -> str | None:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
-        except Exception:
+        except Exception as exc:
+            _log.warning("yt-dlp audio download failed for %s (Strategy 3): %s", video_id, exc)
             return None
 
         audio_files = [f for f in os.listdir(tmpdir) if not f.startswith(".")]
         if not audio_files:
+            _log.warning("No audio files extracted for %s (Strategy 3)", video_id)
             return None
         audio_path = os.path.join(tmpdir, audio_files[0])
 
@@ -134,7 +142,8 @@ def _run_yt_dlp_audio_stt(video_id: str, groq_api_key: str) -> str | None:
                     response_format="text",
                 )
             return str(result) if result else None
-        except Exception:
+        except Exception as exc:
+            _log.warning("Groq transcription failed for %s (Strategy 3): %s", video_id, exc)
             return None
 
 
@@ -174,14 +183,57 @@ async def extract(url: str) -> ExtractedContent:
             TranscriptsDisabled,
             YouTubeTranscriptApi,
         )
-        fetched = YouTubeTranscriptApi().fetch(video_id)
-        entries = fetched.to_raw_data()
-        text = " ".join(e["text"] for e in entries)
-        timestamps = [{"seconds": int(e["start"]), "text": e["text"]} for e in entries]
+        # First try explicit language list to find manual transcripts
+        try:
+            fetched = YouTubeTranscriptApi().fetch(
+                video_id, languages=["en", "en-US", "ko"]
+            )
+            entries = fetched.to_raw_data()
+            text = " ".join(e["text"] for e in entries)
+            timestamps = [
+                {"seconds": int(e["start"]), "text": e["text"]} for e in entries
+            ]
+            _log.debug(
+                "Strategy 1: Found transcript for %s using explicit language fetch",
+                video_id,
+            )
+        except NoTranscriptFound:
+            # No manual transcript; try to find auto-generated transcript
+            try:
+                transcript_list = YouTubeTranscriptApi().list(video_id)
+                _log.debug(
+                    "Strategy 1: Available transcripts for %s: %s",
+                    video_id,
+                    [t.language for t in transcript_list],
+                )
+                for transcript in transcript_list:
+                    if transcript.is_generated:
+                        _log.debug(
+                            "Strategy 1: Found auto-generated transcript in %s for %s",
+                            transcript.language,
+                            video_id,
+                        )
+                        fetched = transcript.fetch()
+                        entries = fetched.to_raw_data()
+                        text = " ".join(e["text"] for e in entries)
+                        timestamps = [
+                            {"seconds": int(e["start"]), "text": e["text"]}
+                            for e in entries
+                        ]
+                        break
+            except Exception as list_exc:
+                _log.warning(
+                    "Strategy 1: Failed to list/fetch auto-generated transcripts for %s: %s",
+                    video_id,
+                    list_exc,
+                )
+
+            if not text:
+                transcript_error = f"No transcript available for {video_id}"
     except ImportError:
         transcript_error = "youtube-transcript-api is not installed"
-    except (NoTranscriptFound, TranscriptsDisabled):
-        transcript_error = f"No transcript available for {video_id}"
+    except TranscriptsDisabled:
+        transcript_error = f"Transcripts disabled for {video_id}"
     except Exception as exc:
         transcript_error = f"Transcript fetch error: {exc}"
 
@@ -208,13 +260,15 @@ async def extract(url: str) -> ExtractedContent:
     author = meta.get("author_name")
 
     if not text:
+        final_error = transcript_error or f"No transcript available for {video_id}"
+        _log.warning("All extraction strategies failed for %s: %s", video_id, final_error)
         return ExtractedContent(
             text="",
             title=title,
             source_url=url,
             source_type="youtube",
             author=author,
-            error=transcript_error or f"No transcript available for {video_id}",
+            error=final_error,
         )
 
     return ExtractedContent(

@@ -2,6 +2,7 @@
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.adapters.youtube import _extract_video_id, extract
@@ -74,13 +75,17 @@ async def test_happy_path():
 
 @pytest.mark.asyncio
 async def test_no_transcript():
-    """When both transcript-api and yt-dlp fallback fail, error is returned."""
+    """When all three strategies fail, error is returned."""
     from youtube_transcript_api import NoTranscriptFound
 
     with (
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
-        patch("app.adapters.youtube._fetch_meta", return_value={"title": "Test", "author_name": None}),
+        patch("app.adapters.youtube._run_yt_dlp_audio_stt", return_value=None),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Test", "author_name": None},
+        ),
     ):
         mock_api_cls.return_value.fetch.side_effect = NoTranscriptFound(
             "dQw4w9WgXcQ", ("en",), MagicMock()
@@ -97,8 +102,14 @@ async def test_no_transcript_yt_dlp_fallback():
 
     with (
         patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
-        patch("app.adapters.youtube._run_yt_dlp_subs", return_value="Auto-generated subtitle text here"),
-        patch("app.adapters.youtube._fetch_meta", return_value={"title": "Test Video", "author_name": "Channel"}),
+        patch(
+            "app.adapters.youtube._run_yt_dlp_subs",
+            return_value="Auto-generated subtitle text here",
+        ),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Test Video", "author_name": "Channel"},
+        ),
     ):
         mock_api_cls.return_value.fetch.side_effect = NoTranscriptFound(
             "dQw4w9WgXcQ", ("en",), MagicMock()
@@ -133,8 +144,381 @@ async def test_module_not_installed():
     with (
         patch.dict(sys.modules, {"youtube_transcript_api": None}),
         patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
-        patch("app.adapters.youtube._fetch_meta", return_value={"title": "Test", "author_name": None}),
+        patch("app.adapters.youtube._run_yt_dlp_audio_stt", return_value=None),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Test", "author_name": None},
+        ),
     ):
         result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
         assert result.error is not None
         assert "youtube-transcript-api is not installed" in result.error
+
+
+# ── TDD: _run_yt_dlp_audio_stt (Groq Whisper STT — Strategy 3) ───────────────
+
+
+def _fake_yt_dlp(monkeypatch, *, create_file: bool = True, raise_exc=None):
+    class _YDL:
+        def __init__(self, opts):
+            self._opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def download(self, urls):
+            if raise_exc:
+                raise raise_exc
+            if create_file:
+                tmpdir = os.path.dirname(self._opts["outtmpl"])
+                open(os.path.join(tmpdir, "audio.m4a"), "w").close()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "yt_dlp",
+        type("M", (), {"YoutubeDL": staticmethod(lambda opts: _YDL(opts))})(),
+    )
+
+
+def _fake_groq(monkeypatch, *, text: str = "Groq transcript", raise_exc=None):
+    class _T:
+        def create(self, **kw):
+            if raise_exc:
+                raise raise_exc
+            return text
+
+    class _A:
+        transcriptions = _T()
+
+    class _C:
+        def __init__(self, api_key=None):
+            self.audio = _A()
+
+    monkeypatch.setitem(
+        sys.modules,
+        "groq",
+        type("M", (), {"Groq": staticmethod(lambda api_key=None: _C(api_key))})(),
+    )
+
+
+import os  # noqa: E402 — needed by helpers above
+
+from app.adapters.youtube import (  # noqa: E402
+    YoutubeAdapter,
+    _fetch_meta,
+    _run_yt_dlp_audio_stt,
+    _run_yt_dlp_subs,
+    _vtt_to_text,
+)
+
+
+def test_stt_returns_transcript_on_success(monkeypatch):
+    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_groq(monkeypatch, text="Hello STT world")
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") == "Hello STT world"
+
+
+def test_stt_returns_none_for_empty_api_key(monkeypatch):
+    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_groq(monkeypatch)
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "") is None
+
+
+def test_stt_returns_none_when_yt_dlp_missing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "yt_dlp", None)
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+def test_stt_returns_none_when_download_raises(monkeypatch):
+    _fake_yt_dlp(monkeypatch, create_file=False, raise_exc=RuntimeError("net"))
+    _fake_groq(monkeypatch)
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+def test_stt_returns_none_when_no_file_created(monkeypatch):
+    _fake_yt_dlp(monkeypatch, create_file=False)
+    _fake_groq(monkeypatch)
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+def test_stt_returns_none_when_groq_missing(monkeypatch):
+    _fake_yt_dlp(monkeypatch, create_file=True)
+    monkeypatch.setitem(sys.modules, "groq", None)
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+def test_stt_returns_none_when_groq_api_raises(monkeypatch):
+    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_groq(monkeypatch, raise_exc=RuntimeError("quota"))
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+
+
+# ── TDD: _vtt_to_text ─────────────────────────────────────────────────────────
+
+
+def test_vtt_to_text_basic():
+    """VTT cues are joined as space-separated plain text."""
+    vtt = (
+        "WEBVTT\n\n"
+        "00:00:00.000 --> 00:00:02.000\nHello world\n\n"
+        "00:00:02.000 --> 00:00:04.000\nThis is a test\n"
+    )
+    assert _vtt_to_text(vtt) == "Hello world This is a test"
+
+
+def test_vtt_to_text_strips_html_tags():
+    """HTML-like tags embedded in VTT cues are stripped from output."""
+    vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n<c.colorE5E5E5>Hello</c> world\n"
+    result = _vtt_to_text(vtt)
+    assert "Hello world" in result
+    assert "<" not in result
+
+
+def test_vtt_to_text_deduplicates_rolling_lines():
+    """Consecutive duplicate lines (yt-dlp rolling window) are deduplicated to one."""
+    vtt = (
+        "WEBVTT\n\n"
+        "00:00:00.000 --> 00:00:02.000\nHello world\n\n"
+        "00:00:01.000 --> 00:00:03.000\nHello world\n\n"
+        "00:00:02.000 --> 00:00:04.000\nnew line\n"
+    )
+    result = _vtt_to_text(vtt)
+    assert result.count("Hello world") == 1
+    assert "new line" in result
+
+
+def test_vtt_to_text_empty_input():
+    """Empty or header-only VTT returns an empty string."""
+    assert _vtt_to_text("") == ""
+    assert _vtt_to_text("WEBVTT\n\n") == ""
+
+
+# ── TDD: _run_yt_dlp_subs ─────────────────────────────────────────────────────
+
+
+def _fake_yt_dlp_subs(monkeypatch, *, vtt_content: str | None, raise_exc=None):
+    """Fake yt_dlp for _run_yt_dlp_subs: optionally writes a .vtt file."""
+    _VTT_CONTENT = vtt_content
+
+    class _YDL:
+        def __init__(self, opts):
+            self._opts = opts
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def download(self, urls):
+            if raise_exc:
+                raise raise_exc
+            if _VTT_CONTENT is not None:
+                tmpdir = os.path.dirname(self._opts["outtmpl"])
+                vtt_path = os.path.join(tmpdir, "dQw4w9WgXcQ.en.vtt")
+                with open(vtt_path, "w", encoding="utf-8") as f:
+                    f.write(_VTT_CONTENT)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "yt_dlp",
+        type("M", (), {"YoutubeDL": staticmethod(lambda opts: _YDL(opts))})(),
+    )
+
+
+def test_run_yt_dlp_subs_returns_text_on_success(monkeypatch):
+    _fake_yt_dlp_subs(
+        monkeypatch,
+        vtt_content="WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSub text\n",
+    )
+    result = _run_yt_dlp_subs("dQw4w9WgXcQ")
+    assert result == "Sub text"
+
+
+def test_run_yt_dlp_subs_returns_none_when_yt_dlp_missing(monkeypatch):
+    monkeypatch.setitem(sys.modules, "yt_dlp", None)
+    assert _run_yt_dlp_subs("dQw4w9WgXcQ") is None
+
+
+def test_run_yt_dlp_subs_returns_none_when_download_raises(monkeypatch):
+    _fake_yt_dlp_subs(monkeypatch, vtt_content=None, raise_exc=RuntimeError("network"))
+    assert _run_yt_dlp_subs("dQw4w9WgXcQ") is None
+
+
+def test_run_yt_dlp_subs_returns_none_when_no_vtt_created(monkeypatch):
+    _fake_yt_dlp_subs(monkeypatch, vtt_content=None)
+    assert _run_yt_dlp_subs("dQw4w9WgXcQ") is None
+
+
+def test_run_yt_dlp_subs_logs_download_failure(monkeypatch, caplog):
+    """Strategy 2 logs the exception when download fails, rather than silently swallowing it."""
+    _fake_yt_dlp_subs(monkeypatch, vtt_content=None, raise_exc=RuntimeError("IP blocked"))
+    import logging
+    caplog.set_level(logging.WARNING, logger="synker.youtube")
+    assert _run_yt_dlp_subs("dQw4w9WgXcQ") is None
+    assert "IP blocked" in caplog.text or "yt-dlp auto-subs download failed" in caplog.text
+
+
+def test_run_yt_dlp_audio_stt_logs_missing_api_key(monkeypatch, caplog):
+    """Strategy 3 logs when GROQ_API_KEY is missing (debug level)."""
+    import logging
+    caplog.set_level(logging.DEBUG, logger="synker.youtube")
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "") is None
+    assert "GROQ_API_KEY not configured" in caplog.text
+
+
+def test_run_yt_dlp_audio_stt_logs_groq_failure(monkeypatch, caplog):
+    """Strategy 3 logs when Groq transcription fails."""
+    _fake_yt_dlp(monkeypatch, create_file=True)
+    _fake_groq(monkeypatch, raise_exc=RuntimeError("quota exceeded"))
+    import logging
+    caplog.set_level(logging.WARNING, logger="synker.youtube")
+    assert _run_yt_dlp_audio_stt("dQw4w9WgXcQ", "key") is None
+    assert "quota exceeded" in caplog.text or "Groq transcription failed" in caplog.text
+
+
+# ── TDD: _fetch_meta error path ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_fetch_meta_http_error_returns_empty_dict():
+    """An HTTP error from the oEmbed endpoint returns {} so callers get a safe default."""
+    with patch("httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = httpx.HTTPError("connection error")
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _fetch_meta("https://www.youtube.com/watch?v=test")
+
+    assert result == {}
+
+
+# ── TDD: Strategy 1 generic exception → Strategy 3 fallback ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_strategy1_tries_auto_generated_when_manual_not_found():
+    """Strategy 1 explicitly tries to find auto-generated transcripts
+    when no manual transcript is found."""
+    from youtube_transcript_api import NoTranscriptFound
+
+    # Mock transcript list with one auto-generated transcript
+    mock_transcript_entry = MagicMock()
+    mock_transcript_entry.is_generated = True
+    mock_transcript_entry.language = "en (auto-generated)"
+    mock_transcript_entry.fetch.return_value.to_raw_data.return_value = [
+        {"start": 0.0, "duration": 2.0, "text": "Auto generated content"}
+    ]
+
+    mock_transcript_list = [mock_transcript_entry]
+
+    with (
+        patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
+        patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
+        patch("app.adapters.youtube._run_yt_dlp_audio_stt", return_value=None),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Test Video", "author_name": "Test Channel"},
+        ),
+    ):
+        api_instance = MagicMock()
+        # First call to fetch() with explicit languages raises NoTranscriptFound
+        api_instance.fetch.side_effect = NoTranscriptFound(
+            "dQw4w9WgXcQ", ("en", "en-US", "ko"), MagicMock()
+        )
+        # Second call to list() returns auto-generated transcript
+        api_instance.list.return_value = mock_transcript_list
+        mock_api_cls.return_value = api_instance
+
+        result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    assert result.error is None
+    assert "Auto generated content" in result.text
+    assert result.title == "Test Video"
+
+
+@pytest.mark.asyncio
+async def test_strategy1_generic_exception_falls_through_to_strategy3():
+    """An unexpected exception from the transcript API (not NoTranscriptFound)
+    is caught and Strategy 3 (Groq STT) is invoked as the final fallback."""
+    with (
+        patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
+        patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
+        patch(
+            "app.adapters.youtube._run_yt_dlp_audio_stt",
+            return_value="Fallback transcript",
+        ),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Title", "author_name": None},
+        ),
+    ):
+        mock_api_cls.return_value.fetch.side_effect = ValueError("unexpected API shape")
+        result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    assert result.error is None
+    assert result.text == "Fallback transcript"
+
+
+# ── TDD: Strategy 3 integration — success path in extract() ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_strategy3_groq_stt_used_when_strategies_1_and_2_fail():
+    """When Strategy 1 and 2 both return no text, Strategy 3 (Groq Whisper STT)
+    provides the transcript and the result has no error."""
+    from youtube_transcript_api import NoTranscriptFound
+
+    with (
+        patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
+        patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
+        patch(
+            "app.adapters.youtube._run_yt_dlp_audio_stt",
+            return_value="Groq STT transcript",
+        ),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Video Title", "author_name": "Author"},
+        ),
+    ):
+        mock_api_cls.return_value.fetch.side_effect = NoTranscriptFound(
+            "dQw4w9WgXcQ", ("en",), MagicMock()
+        )
+        result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    assert result.error is None
+    assert result.text == "Groq STT transcript"
+    assert result.title == "Video Title"
+    assert result.author == "Author"
+
+
+# ── TDD: YoutubeAdapter class wrapper ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_youtube_adapter_delegates_to_module_extract():
+    """YoutubeAdapter.extract() is a thin delegation wrapper; it calls the module-level
+    extract() with the URL unchanged and returns its result."""
+    from app.adapters.base import ExtractedContent
+
+    expected = ExtractedContent(
+        text="adapter test content",
+        title="Adapter Test",
+        source_url="https://www.youtube.com/watch?v=abc123",
+        source_type="youtube",
+    )
+
+    with patch(
+        "app.adapters.youtube.extract", new=AsyncMock(return_value=expected)
+    ) as mock_extract:
+        adapter = YoutubeAdapter()
+        result = await adapter.extract("https://www.youtube.com/watch?v=abc123")
+
+    mock_extract.assert_called_once_with("https://www.youtube.com/watch?v=abc123")
+    assert result.text == "adapter test content"
+    assert result.title == "Adapter Test"

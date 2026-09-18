@@ -28,7 +28,7 @@ async def list_notes(
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
-    base = """SELECT id, title, source, generated_at, ai_action, quality_score,
+    base = """SELECT id, title, source, topic_id, source_id, generated_at, ai_action, quality_score,
                      has_duplicate, content, frontmatter, citations, wiki_links,
                      similarity_reasoning, similar_to, status
               FROM notes WHERE user_id=$1"""

@@ -136,7 +136,7 @@ export const api = {
     delete: (id: string) => DELETE_REQ(`/api/jobs/${id}`),
   },
   notes: {
-    list: () => GET<Note[]>("/api/notes", seedNotes),
+    list: () => GET<Note[]>("/api/notes?status=pending", seedNotes),
     approve: (id: string) => POST(`/api/notes/${id}/approve`),
     reject: (id: string) => POST(`/api/notes/${id}/reject`),
   },

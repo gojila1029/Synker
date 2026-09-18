@@ -74,11 +74,11 @@ function Card({ children, className = "" }: { children: React.ReactNode; classNa
   );
 }
 
-function SectionHeader({ title, description, action, testId }: { title: string; description?: string; action?: React.ReactNode; testId?: string }) {
+function SectionHeader({ title, description, action }: { title: string; description?: string; action?: React.ReactNode }) {
   return (
     <div className="flex items-start justify-between gap-4 mb-6">
       <div>
-        <h1 className="text-xl font-semibold text-slate-900" data-testid={testId}>{title}</h1>
+        <h1 className="text-xl font-semibold text-slate-900">{title}</h1>
         {description && <p className="text-sm text-slate-500 mt-0.5">{description}</p>}
       </div>
       {action && <div className="shrink-0">{action}</div>}
@@ -288,7 +288,7 @@ function DashboardScreen({ onNavigateToSources }: { onNavigateToSources: () => v
 
       {/* Pipeline */}
       <Card className="p-5">
-        <h2 className="text-sm font-semibold text-slate-700 mb-4" data-testid="dashboard-pipeline-heading">Knowledge Pipeline</h2>
+        <h2 className="text-sm font-semibold text-slate-700 mb-4">Knowledge Pipeline</h2>
         <div className="flex items-center overflow-x-auto pb-2">
           {pipeline.map((stage, i) => {
             const count = stats?.pipelineCounts?.[stage] ?? 0;
@@ -568,7 +568,7 @@ function SourcesScreen() {
       <SectionHeader
         title="Sources"
         description="Manage where Synker discovers and ingests knowledge from"
-        action={<Button onClick={() => setShowModal(true)} variant="primary" data-testid="sources-add-button"><Plus className="size-4" />Add Source</Button>}
+        action={<Button onClick={() => setShowModal(true)} variant="primary"><Plus className="size-4" />Add Source</Button>}
       />
 
       {/* Discovery Topics */}
@@ -980,7 +980,6 @@ function CandidateApprovalScreen() {
       <SectionHeader
         title="Review Candidates"
         description="AI has found these sources — review and approve them for processing"
-        testId="approval-review-heading"
         action={
           <div className="flex items-center gap-2">
             {selected.size > 0 && <span className="text-xs text-slate-500 font-medium">{selected.size} selected</span>}
@@ -1113,7 +1112,6 @@ function ProcessingJobsScreen() {
       <SectionHeader
         title="Processing Jobs"
         description="Track extraction, transcription, and note generation tasks"
-        testId="jobs-heading"
         action={
           <Button onClick={async () => { setRefreshing(true); try { await refetch(); } finally { setRefreshing(false); } }} variant="secondary" size="sm" disabled={refreshing}>
             <RefreshCw className={`size-3.5${refreshing ? " animate-spin" : ""}`} /> {refreshing ? "Refreshing…" : "Refresh"}
@@ -1255,7 +1253,7 @@ function KnowledgeReviewScreen() {
       {/* List panel */}
       <div className="w-72 shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="px-4 py-4 border-b border-slate-100">
-          <h1 className="text-base font-semibold text-slate-900" data-testid="knowledge-review-heading">Knowledge Review</h1>
+          <h1 className="text-base font-semibold text-slate-900">Knowledge Review</h1>
           <p className="text-xs text-slate-500 mt-0.5">{(notes ?? []).length} notes ready to review</p>
         </div>
         <div className="flex-1 overflow-y-auto">
@@ -1447,7 +1445,7 @@ function VaultBrowserScreen() {
       {/* Tree */}
       <div className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="p-3 border-b border-slate-100">
-          <h1 className="text-sm font-semibold text-slate-900 mb-2" data-testid="vault-content">Vault Browser</h1>
+          <h1 className="text-sm font-semibold text-slate-900 mb-2">Vault Browser</h1>
           <div className="relative">
             <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your notes…"
@@ -1616,7 +1614,7 @@ function SettingsScreen() {
 
   return (
     <div className="p-6 space-y-5 max-w-2xl">
-      <SectionHeader title="Settings" description="Configure your vault, AI providers, and preferences" testId="settings-content" />
+      <SectionHeader title="Settings" description="Configure your vault, AI providers, and preferences" />
 
       <SettingsSection title="Vault" description="Where Synker writes your generated notes" onSave={() => save("vault", vault)}>
         <div><label className={labelCls}>Vault name</label><input className={inputCls} value={vault.name} onChange={(e) => setVault({ ...vault, name: e.target.value })} /></div>
@@ -1837,8 +1835,6 @@ export default function App() {
         <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
           {navItems.map((item) => (
             <button key={item.id} onClick={() => setActive(item.id)}
-              data-testid={`nav-${item.id}`}
-              aria-current={active === item.id ? "page" : undefined}
               className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm transition-all ${
                 active === item.id
                   ? "bg-blue-600 text-white shadow-sm"
