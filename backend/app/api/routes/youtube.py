@@ -50,7 +50,9 @@ class ParsedIntentResponse(BaseModel):
 
 
 class BatchNoteRequest(BaseModel):
-    video_urls: list[str]
+    model_config = {"populate_by_name": True}
+    # Accept both snake_case (video_urls) and camelCase (videoUrls) from clients
+    video_urls: list[str] = Field(alias="videoUrls", default_factory=list)
 
 
 class BatchNoteItem(BaseModel):
@@ -235,7 +237,9 @@ async def create_notes_batch(
             fields = _candidate_fields(extracted, f"YouTube video {video_id}", domain)
 
             # Create candidate with status=approved (Track B auto-approves)
-            async with db.acquire() as conn:
+            # db is already a Connection from get_db; use directly (no acquire)
+            if True:
+                conn = db
                 candidate_row = await conn.fetchrow(
                     """INSERT INTO candidates
                        (user_id, source_id, title, source_info, domain, published_at,
@@ -291,15 +295,14 @@ async def create_notes_batch(
                     job_id = uuid.uuid4()
                     await conn.execute(
                         """INSERT INTO jobs
-                           (id, user_id, job_type, source_id, candidate_id, status, created_at)
-                           VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+                           (id, user_id, type, source_id, candidate_id, status)
+                           VALUES ($1, $2, $3, $4, $5, $6)""",
                         job_id,
                         user_uuid,
                         "Note Gen",
                         source_id,
                         candidate_id,
                         "queued",
-                        "now()",
                     )
 
             results.append(
