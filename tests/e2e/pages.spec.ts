@@ -18,14 +18,21 @@ const TEST_EMAIL    = process.env.TEST_EMAIL    ?? ''
 const TEST_PASSWORD = process.env.TEST_PASSWORD ?? ''
 const skipAuth      = !TEST_EMAIL || !TEST_PASSWORD
 
+// Timeout constants for clarity and consistency
+const TIMEOUT_LOGIN = 20_000  // Initial login + app hydration
+const TIMEOUT_NAV = 10_000    // Page navigation
+
 async function signIn(page: Page): Promise<void> {
   await page.goto('/')
-  await page.waitForSelector('input[type="email"], [data-testid="email-input"]', { timeout: 10_000 })
+  await page.waitForSelector('input[type="email"]', { timeout: TIMEOUT_LOGIN })
   await page.fill('input[type="email"]', TEST_EMAIL)
   await page.fill('input[type="password"]', TEST_PASSWORD)
-  await page.click('button[type="submit"], button:has-text("Sign in"), button:has-text("Login")')
+  await page.click('button[type="submit"]')
   // SPA — URL stays at '/'. Wait for the sidebar Sources button to appear after login.
-  await page.waitForSelector('button:has-text("Sources")', { timeout: 20_000 })
+  // Login triggers app initialization (state hydration, initial API calls).
+  await page.waitForSelector('button:has-text("Sources")', { timeout: TIMEOUT_LOGIN })
+  // Wait for initial data loads to complete before test begins
+  await page.waitForLoadState('networkidle')
 }
 
 // ── AC-001: Dashboard page loads without errors ────────────────────────────────
@@ -44,8 +51,11 @@ test('AC-001: Dashboard page loads and displays content', async ({ page }) => {
   // Dashboard is the default screen after login — check for KPI cards or pipeline heading
   await expect(page.locator('text=Knowledge Pipeline')).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -67,8 +77,11 @@ test('AC-002: Sources page loads and displays content', async ({ page }) => {
   // Wait for Add Source button which is always visible in SourcesScreen
   await expect(page.locator('button:has-text("Add Source")')).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -92,8 +105,11 @@ test('AC-003: Approval page loads and displays content', async ({ page }) => {
   const emptyState = page.locator('text=Nothing to review')
   await expect(reviewHeading.or(emptyState)).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -115,8 +131,11 @@ test('AC-004: Processing Jobs page loads and displays content', async ({ page })
   // Wait for either the Processing Jobs heading or job status tabs
   await expect(page.locator('h1:has-text("Processing Jobs")').first()).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -140,8 +159,11 @@ test('AC-005: Knowledge Review page loads and displays content', async ({ page }
   const emptyState = page.locator('text=No notes yet')
   await expect(reviewHeading.or(emptyState)).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -160,13 +182,14 @@ test('AC-006: Vault Browser page loads and displays content', async ({ page }) =
   await signIn(page)
   await page.click('button:has-text("Vault")')
 
-  // VaultBrowserScreen renders a file/folder browser with h1 heading
-  // Wait for the main vault heading or any file list content
-  const mainContent = page.locator('main').first()
-  await expect(mainContent).toBeVisible({ timeout: 10_000 })
+  // VaultBrowserScreen renders h1 "Vault Browser" heading — unique to this screen
+  await expect(page.locator('h1:has-text("Vault Browser")').first()).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -185,13 +208,14 @@ test('AC-007: Settings page loads and displays content', async ({ page }) => {
   await signIn(page)
   await page.click('button:has-text("Settings")')
 
-  // SettingsScreen renders settings sections with h2 headings
-  // Wait for any settings section heading or the main content area
-  const settingsContent = page.locator('main').first()
-  await expect(settingsContent).toBeVisible({ timeout: 10_000 })
+  // SettingsScreen has an "Obsidian vault path" label unique to this screen
+  await expect(page.locator('label:has-text("Obsidian vault path")').first()).toBeVisible({ timeout: 10_000 })
 
+  // Filter errors: favicon requests and ResizeObserver loops are known non-critical
+  // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
+  const ignoredErrors = ['favicon', 'ResizeObserver']
   const critical = errors.filter(
-    (e) => !e.includes('favicon') && !e.includes('ResizeObserver')
+    (e) => !ignoredErrors.some(pattern => e.includes(pattern))
   )
   expect(critical, `Console errors: ${critical.join(', ')}`).toHaveLength(0)
 })
@@ -209,8 +233,8 @@ test('AC-008: All sidebar buttons navigate correctly', async ({ page }) => {
     { label: 'Approval', selector: 'h1:has-text("Review Candidates")' },
     { label: 'Jobs', selector: 'h1:has-text("Processing Jobs")' },
     { label: 'Knowledge', selector: 'h1:has-text("Knowledge Review")' },
-    { label: 'Vault', selector: 'main' },
-    { label: 'Settings', selector: 'main' },
+    { label: 'Vault', selector: 'h1:has-text("Vault Browser")' },
+    { label: 'Settings', selector: 'label:has-text("Obsidian vault path")' },
   ]
 
   for (const { label, selector } of pages) {
@@ -270,13 +294,9 @@ test('AC-011: Backend health endpoint is reachable', async ({ request }) => {
   const BACKEND = process.env.BACKEND_URL ?? 'http://localhost:8000'
   const resp = await request.get(`${BACKEND}/health`)
 
-  // Backend is reachable if it responds (2xx or 5xx are both acceptable)
-  // 503 Service Unavailable means the service is running but dependencies (DB) are initializing
-  expect(resp.status(), `Backend health check returned ${resp.status()}`).toBeGreaterThanOrEqual(200)
-
+  expect(resp.status()).toBe(200)
   const body = await resp.json()
-  // Accept either 'ok' status or 'degraded' (DB initialization in progress)
-  expect(['ok', 'degraded']).toContain(body.status)
+  expect(body.status).toBe('ok')
 })
 
 // ── AC-012: All page navigation is read-only (non-destructive) ──────────────────
@@ -284,29 +304,28 @@ test('AC-011: Backend health endpoint is reachable', async ({ request }) => {
 test('AC-012: Page navigation and element rendering are read-only', async ({ page }) => {
   test.skip(skipAuth, 'TEST_EMAIL / TEST_PASSWORD not set')
 
-  // This test confirms that navigating through pages and viewing elements
-  // does not modify any data or trigger destructive operations.
-  // Navigation via button clicks only displays different screens without
-  // submitting forms, approving/rejecting items, or deleting content.
+  // Record baseline: no POST/PUT/DELETE calls should occur during navigation
+  let mutatingApiCallCount = 0
+  page.on('response', (resp) => {
+    // Only GET and read-only requests allowed during navigation-only test
+    const method = resp.request().method()
+    if (['POST', 'PUT', 'DELETE'].includes(method)) {
+      mutatingApiCallCount++
+    }
+  })
 
   await signIn(page)
 
+  // Navigate through all pages without triggering approval/rejection/submission
   const navButtons = ['Sources', 'Approval', 'Jobs', 'Knowledge', 'Vault', 'Settings']
 
   for (const button of navButtons) {
     await page.click(`button:has-text("${button}")`)
-    // Wait for page to render
+    // Load complete before moving to next navigation
     await page.waitForLoadState('networkidle')
-
-    // Verify no submit buttons are automatically clicked or forms submitted
-    const formSubmissions = await page.locator('form').count()
-    if (formSubmissions > 0) {
-      // Forms may exist but should not be auto-submitted during navigation
-      const submitButtons = await page.locator('button[type="submit"]').count()
-      expect(submitButtons, `Page '${button}' has unclicked submit buttons`).toBeGreaterThanOrEqual(0)
-    }
   }
 
-  // Navigation complete: all pages loaded without errors
-  // (test body validates no forms auto-submitted during transitions)
+  // Verify no data-modifying API calls were made during navigation-only test
+  // (navigation should trigger only GET requests, not mutations)
+  expect(mutatingApiCallCount, 'Navigation should not trigger POST/PUT/DELETE calls').toBe(0)
 })
