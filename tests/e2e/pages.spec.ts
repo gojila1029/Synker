@@ -49,7 +49,7 @@ test('AC-001: Dashboard page loads and displays content', async ({ page }) => {
   await signIn(page)
 
   // Dashboard is the default screen after login — check for KPI cards or pipeline heading
-  await expect(page.locator('text=Knowledge Pipeline')).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('[data-testid="dashboard-pipeline-heading"]')).toBeVisible({ timeout: 10_000 })
 
   // Filter errors: favicon requests and ResizeObserver loops are known non-critical
   // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
@@ -72,10 +72,10 @@ test('AC-002: Sources page loads and displays content', async ({ page }) => {
   })
 
   await signIn(page)
-  await page.click('button:has-text("Sources")')
+  await page.click('[data-testid="nav-sources"]')
 
   // Wait for Add Source button which is always visible in SourcesScreen
-  await expect(page.locator('button:has-text("Add Source")')).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('[data-testid="sources-add-button"]')).toBeVisible({ timeout: 10_000 })
 
   // Filter errors: favicon requests and ResizeObserver loops are known non-critical
   // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
@@ -98,10 +98,10 @@ test('AC-003: Approval page loads and displays content', async ({ page }) => {
   })
 
   await signIn(page)
-  await page.click('button:has-text("Approval")')
+  await page.click('[data-testid="nav-candidates"]')
 
   // Wait for either the Review Candidates heading or the Nothing to review empty state
-  const reviewHeading = page.locator('h1:has-text("Review Candidates")')
+  const reviewHeading = page.locator('[data-testid="approval-review-heading"]')
   const emptyState = page.locator('text=Nothing to review')
   await expect(reviewHeading.or(emptyState)).toBeVisible({ timeout: 10_000 })
 
@@ -126,10 +126,10 @@ test('AC-004: Processing Jobs page loads and displays content', async ({ page })
   })
 
   await signIn(page)
-  await page.click('button:has-text("Jobs")')
+  await page.click('[data-testid="nav-jobs"]')
 
   // Wait for either the Processing Jobs heading or job status tabs
-  await expect(page.locator('h1:has-text("Processing Jobs")').first()).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('[data-testid="jobs-heading"]').first()).toBeVisible({ timeout: 10_000 })
 
   // Filter errors: favicon requests and ResizeObserver loops are known non-critical
   // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
@@ -152,10 +152,10 @@ test('AC-005: Knowledge Review page loads and displays content', async ({ page }
   })
 
   await signIn(page)
-  await page.click('button:has-text("Knowledge")')
+  await page.click('[data-testid="nav-review"]')
 
   // Wait for the Knowledge Review heading (h1 in the left panel) — KnowledgeReviewScreen, line 1256
-  const reviewHeading = page.locator('h1:has-text("Knowledge Review")')
+  const reviewHeading = page.locator('[data-testid="knowledge-review-heading"]')
   const emptyState = page.locator('text=No notes yet')
   await expect(reviewHeading.or(emptyState)).toBeVisible({ timeout: 10_000 })
 
@@ -180,10 +180,10 @@ test('AC-006: Vault Browser page loads and displays content', async ({ page }) =
   })
 
   await signIn(page)
-  await page.click('button:has-text("Vault")')
+  await page.click('[data-testid="nav-vault"]')
 
   // VaultBrowserScreen renders h1 "Vault Browser" heading — unique to this screen
-  await expect(page.locator('h1:has-text("Vault Browser")').first()).toBeVisible({ timeout: 10_000 })
+  await expect(page.locator('[data-testid="vault-content"]').first()).toBeVisible({ timeout: 10_000 })
 
   // Filter errors: favicon requests and ResizeObserver loops are known non-critical
   // (favicon auto-requested by browser, ResizeObserver is a Chrome observer loop that doesn't block rendering)
@@ -206,7 +206,7 @@ test('AC-007: Settings page loads and displays content', async ({ page }) => {
   })
 
   await signIn(page)
-  await page.click('button:has-text("Settings")')
+  await page.click('[data-testid="nav-settings"]')
 
   // SettingsScreen has an "Obsidian vault path" label unique to this screen
   await expect(page.locator('label:has-text("Obsidian vault path")').first()).toBeVisible({ timeout: 10_000 })
@@ -228,17 +228,17 @@ test('AC-008: All sidebar buttons navigate correctly', async ({ page }) => {
   await signIn(page)
 
   const pages = [
-    { label: 'Dashboard', selector: 'text=Knowledge Pipeline' },
-    { label: 'Sources', selector: 'button:has-text("Add Source")' },
-    { label: 'Approval', selector: 'h1:has-text("Review Candidates")' },
-    { label: 'Jobs', selector: 'h1:has-text("Processing Jobs")' },
-    { label: 'Knowledge', selector: 'h1:has-text("Knowledge Review")' },
-    { label: 'Vault', selector: 'h1:has-text("Vault Browser")' },
-    { label: 'Settings', selector: 'label:has-text("Obsidian vault path")' },
+    { testid: 'nav-dashboard', selector: '[data-testid="dashboard-pipeline-heading"]' },
+    { testid: 'nav-sources', selector: '[data-testid="sources-add-button"]' },
+    { testid: 'nav-candidates', selector: '[data-testid="approval-review-heading"]' },
+    { testid: 'nav-jobs', selector: '[data-testid="jobs-heading"]' },
+    { testid: 'nav-review', selector: '[data-testid="knowledge-review-heading"]' },
+    { testid: 'nav-vault', selector: '[data-testid="vault-content"]' },
+    { testid: 'nav-settings', selector: 'label:has-text("Obsidian vault path")' },
   ]
 
-  for (const { label, selector } of pages) {
-    await page.click(`button:has-text("${label}")`)
+  for (const { testid, selector } of pages) {
+    await page.click(`[data-testid="${testid}"]`)
     await expect(page.locator(selector)).toBeVisible({ timeout: 10_000 })
   }
 })
@@ -251,14 +251,14 @@ test('AC-009: Active sidebar button has correct styling', async ({ page }) => {
   await signIn(page)
 
   // Navigate to Sources
-  await page.click('button:has-text("Sources")')
-  await page.waitForSelector('button:has-text("Add Source")', { timeout: 10_000 })
+  await page.click('[data-testid="nav-sources"]')
+  await page.waitForSelector('[data-testid="sources-add-button"]', { timeout: 10_000 })
 
-  // Check that the Sources button has the bg-blue-600 class (active state)
-  const sourcesButton = page.locator('nav button:has-text("Sources")')
-  const classes = await sourcesButton.evaluate((el) => el.className)
+  // Check that the Sources button has aria-current="page" attribute (active state)
+  const sourcesButton = page.locator('[data-testid="nav-sources"]')
+  const ariaCurrent = await sourcesButton.getAttribute('aria-current')
 
-  expect(classes).toContain('bg-blue-600')
+  expect(ariaCurrent).toBe('page')
 })
 
 // ── AC-010: Page transitions do not trigger console errors ────────────────────
@@ -275,10 +275,10 @@ test('AC-010: Page transitions do not trigger console errors', async ({ page }) 
   await signIn(page)
 
   // Navigate through multiple pages in sequence
-  const navButtons = ['Sources', 'Approval', 'Jobs', 'Knowledge', 'Vault', 'Settings', 'Dashboard']
+  const navButtons = ['nav-sources', 'nav-candidates', 'nav-jobs', 'nav-review', 'nav-vault', 'nav-settings', 'nav-dashboard']
 
-  for (const button of navButtons) {
-    await page.click(`button:has-text("${button}")`)
+  for (const testid of navButtons) {
+    await page.click(`[data-testid="${testid}"]`)
     await page.waitForLoadState('networkidle')
   }
 
@@ -317,10 +317,10 @@ test('AC-012: Page navigation and element rendering are read-only', async ({ pag
   await signIn(page)
 
   // Navigate through all pages without triggering approval/rejection/submission
-  const navButtons = ['Sources', 'Approval', 'Jobs', 'Knowledge', 'Vault', 'Settings']
+  const navButtons = ['nav-sources', 'nav-candidates', 'nav-jobs', 'nav-review', 'nav-vault', 'nav-settings']
 
-  for (const button of navButtons) {
-    await page.click(`button:has-text("${button}")`)
+  for (const testid of navButtons) {
+    await page.click(`[data-testid="${testid}"]`)
     // Load complete before moving to next navigation
     await page.waitForLoadState('networkidle')
   }
