@@ -1,14 +1,15 @@
 import os
+from unittest.mock import patch
 
 # Set required secrets before importing app so pydantic-settings validators pass in tests
 os.environ.setdefault("SUPABASE_JWT_SECRET", "test-secret-not-for-production")
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://test:test@localhost/test")
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
-from app.main import app
 from app.api.deps import get_current_user, get_db
+from app.main import app
 
 MOCK_USER = {
     "sub": "00000000-0000-0000-0000-000000000001",
@@ -76,3 +77,18 @@ async def authed_client_with_source() -> AsyncClient:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def _disable_supadata_by_default(request):
+    """Disable Supadata and Groq by default in tests to prevent real API calls.
+    Tests marked with @pytest.mark.supadata_test can override this."""
+    if "supadata_test" in request.keywords:
+        # Test explicitly tests Supadata; don't block it
+        yield
+    else:
+        # Patch settings to disable Supadata/Groq
+        with patch("app.core.config.settings") as mock_settings:
+            mock_settings.supadata_api_key = ""
+            mock_settings.groq_api_key = ""
+            yield
