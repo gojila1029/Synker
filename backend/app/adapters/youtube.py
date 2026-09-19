@@ -126,7 +126,7 @@ async def _run_supadata(video_id: str, supadata_api_key: str) -> str | None:
             resp = await client.post(
                 "https://api.supadata.ai/v1/youtube/transcript",
                 json=payload,
-                headers={"Authorization": f"Bearer {supadata_api_key}"},
+                headers={"x-api-key": supadata_api_key},
             )
 
             if resp.status_code == 402:
@@ -169,7 +169,7 @@ async def _run_supadata(video_id: str, supadata_api_key: str) -> str | None:
                 poll_resp = await client.post(
                     "https://api.supadata.ai/v1/youtube/transcript",
                     json={"jobId": job_id},
-                    headers={"Authorization": f"Bearer {supadata_api_key}"},
+                    headers={"x-api-key": supadata_api_key},
                 )
 
                 if poll_resp.status_code >= 400:
