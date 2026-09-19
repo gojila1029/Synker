@@ -116,16 +116,16 @@ async def _run_supadata(video_id: str, supadata_api_key: str) -> str | None:
     if not supadata_api_key:
         return None
 
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    payload = {"url": url, "lang": "en"}
+    video_url = f"https://www.youtube.com/watch?v={video_id}"
+    params = {"url": video_url, "lang": "en", "text": "true"}
 
     t0 = time.monotonic()
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            # Initial request
-            resp = await client.post(
+            # Initial request — Supadata API uses GET + query params
+            resp = await client.get(
                 "https://api.supadata.ai/v1/youtube/transcript",
-                json=payload,
+                params=params,
                 headers={"x-api-key": supadata_api_key},
             )
 
@@ -166,9 +166,9 @@ async def _run_supadata(video_id: str, supadata_api_key: str) -> str | None:
             _log.debug("Strategy 1.5 (Supadata) polling jobId %s for %s", job_id, video_id)
             for poll_round in range(1, 13):
                 await asyncio.sleep(5)
-                poll_resp = await client.post(
+                poll_resp = await client.get(
                     "https://api.supadata.ai/v1/youtube/transcript",
-                    json={"jobId": job_id},
+                    params={"jobId": job_id},
                     headers={"x-api-key": supadata_api_key},
                 )
 
