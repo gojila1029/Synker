@@ -104,6 +104,155 @@ def _run_yt_dlp_subs(video_id: str) -> str | None:
     return None
 
 
+async def _run_supadata(video_id: str, supadata_api_key: str) -> str | None:
+    """Call Supadata API to transcribe a YouTube video.
+
+    For videos ≤20 min: returns transcript immediately.
+    For videos >20 min: returns a jobId; poll status endpoint every 5s,
+    up to 12 times (60s timeout).
+
+    Returns transcript text, or None on any error except SUPADATA_CREDIT_EXHAUSTED (which raises).
+    """
+    if not supadata_api_key:
+        return None
+
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    payload = {"url": url, "lang": "en"}
+
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            # Initial request
+            resp = await client.post(
+                "https://api.supadata.ai/v1/youtube/transcript",
+                json=payload,
+                headers={"Authorization": f"Bearer {supadata_api_key}"},
+            )
+
+            if resp.status_code == 402:
+                raise Exception("SUPADATA_CREDIT_EXHAUSTED")
+
+            if resp.status_code >= 400:
+                elapsed = time.monotonic() - t0
+                _log.info(
+                    "Strategy 1.5 (Supadata) failed for %s after %.2fs (HTTP %d)",
+                    video_id,
+                    elapsed,
+                    resp.status_code,
+                )
+                return None
+
+            data = resp.json()
+
+            # Check for direct transcript
+            if "content" in data and data.get("content"):
+                lang = data.get("lang", "unknown")
+                _log.debug(
+                    "Strategy 1.5 (Supadata) returned transcript immediately for %s (lang=%s)",
+                    video_id,
+                    lang,
+                )
+                return str(data["content"])
+
+            # Check for jobId (polling required)
+            job_id = data.get("jobId")
+            if not job_id:
+                # Empty content or no jobId
+                if data.get("content") == "":
+                    _log.debug("Strategy 1.5 (Supadata) returned empty content for %s", video_id)
+                return None
+
+            # Poll status endpoint
+            _log.debug("Strategy 1.5 (Supadata) polling jobId %s for %s", job_id, video_id)
+            for poll_round in range(1, 13):
+                await asyncio.sleep(5)
+                poll_resp = await client.post(
+                    "https://api.supadata.ai/v1/youtube/transcript",
+                    json={"jobId": job_id},
+                    headers={"Authorization": f"Bearer {supadata_api_key}"},
+                )
+
+                if poll_resp.status_code >= 400:
+                    elapsed = time.monotonic() - t0
+                    _log.info(
+                        "Strategy 1.5 (Supadata) polling failed for %s (job %s) "
+                        "at round %d after %.2fs: HTTP %d",
+                        video_id,
+                        job_id,
+                        poll_round,
+                        elapsed,
+                        poll_resp.status_code,
+                    )
+                    return None
+
+                poll_data = poll_resp.json()
+                status = poll_data.get("status", "unknown")
+
+                elapsed = time.monotonic() - t0
+                _log.debug(
+                    "Strategy 1.5 (Supadata) poll round %d of 12 for %s (job %s): "
+                    "status=%s, elapsed=%.2fs",
+                    poll_round,
+                    video_id,
+                    job_id,
+                    status,
+                    elapsed,
+                )
+
+                if status == "completed":
+                    content = poll_data.get("content")
+                    if content:
+                        lang = poll_data.get("lang", "unknown")
+                        _log.info(
+                            "Strategy 1.5 (Supadata) completed for %s (job %s) "
+                            "at round %d: lang=%s",
+                            video_id,
+                            job_id,
+                            poll_round,
+                            lang,
+                        )
+                        return str(content)
+                    else:
+                        _log.warning(
+                            "Strategy 1.5 (Supadata) completed but no content for %s (job %s)",
+                            video_id,
+                            job_id,
+                        )
+                        return None
+
+                if status == "failed":
+                    _log.warning(
+                        "Strategy 1.5 (Supadata) failed for %s (job %s) at round %d",
+                        video_id,
+                        job_id,
+                        poll_round,
+                    )
+                    return None
+
+            # Timeout after 12 polls
+            elapsed = time.monotonic() - t0
+            _log.warning(
+                "Strategy 1.5 (Supadata) polling timeout for %s (job %s) after %.2fs (12 polls)",
+                video_id,
+                job_id,
+                elapsed,
+            )
+            return None
+
+    except Exception as exc:
+        exc_str = str(exc)
+        if "SUPADATA_CREDIT_EXHAUSTED" in exc_str:
+            raise
+        elapsed = time.monotonic() - t0
+        _log.info(
+            "Strategy 1.5 (Supadata) exception for %s after %.2fs: %s",
+            video_id,
+            elapsed,
+            exc,
+        )
+        return None
+
+
 def _run_pytubefix_audio_stt(video_id: str, groq_api_key: str) -> str | None:
     """Download audio via pytubefix (YouTube InnerTube API) and transcribe with Groq Whisper.
 
@@ -259,6 +408,24 @@ async def extract(url: str) -> ExtractedContent:
             transcript_error = exc_str
         else:
             transcript_error = f"Transcript fetch error: {exc}"
+
+    # ── Strategy 1.5: Supadata API ────────────────────────────────────────
+    if not text and transcript_error:
+        from app.core.config import settings
+
+        if settings.supadata_api_key:
+            try:
+                supadata_text = await _run_supadata(video_id, settings.supadata_api_key)
+                if supadata_text:
+                    text = supadata_text
+                    transcript_error = ""
+            except Exception as exc:
+                exc_str = str(exc)
+                if "SUPADATA_CREDIT_EXHAUSTED" in exc_str:
+                    transcript_error = f"Supadata credits exhausted; {transcript_error}"
+                    _log.warning("Strategy 1.5 (Supadata) credit exhausted for %s", video_id)
+                else:
+                    raise
 
     # ── Strategy 2: yt-dlp auto-generated subtitles ─────────────────────────
     if not text and transcript_error:

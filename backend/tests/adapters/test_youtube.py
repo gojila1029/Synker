@@ -759,3 +759,243 @@ async def test_oembed_failure_logged(caplog):
     assert "transcript" in result.text
     # Check for oEmbed failure log
     assert "oEmbed" in caplog.text or "metadata fetch failed" in caplog.text
+
+
+# ── TDD: _run_supadata (Strategy 1.5) ─────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_supadata_returns_transcript_immediately():
+    """Supadata returns transcript directly (video ≤20 min)."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={
+            "content": "This is a test transcript from Supadata",
+            "lang": "en",
+        })
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+    assert result == "This is a test transcript from Supadata"
+
+
+@pytest.mark.asyncio
+async def test_supadata_polls_until_completed():
+    """Supadata polls status endpoint until completed (video >20 min)."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls, patch(
+        "app.adapters.youtube.asyncio.sleep", new_callable=AsyncMock
+    ):
+        mock_client = AsyncMock()
+        mock_response1 = MagicMock()
+        mock_response1.status_code = 200
+        mock_response1.json = MagicMock(return_value={"jobId": "job-123"})
+
+        # Poll 1: queued
+        mock_response2 = MagicMock()
+        mock_response2.status_code = 200
+        mock_response2.json = MagicMock(return_value={"status": "queued"})
+
+        # Poll 2: active
+        mock_response3 = MagicMock()
+        mock_response3.status_code = 200
+        mock_response3.json = MagicMock(return_value={"status": "active"})
+
+        # Poll 3: completed
+        mock_response4 = MagicMock()
+        mock_response4.status_code = 200
+        mock_response4.json = MagicMock(return_value={
+            "status": "completed",
+            "content": "Polled transcript text",
+            "lang": "en",
+        })
+
+        mock_client.post = AsyncMock(
+            side_effect=[mock_response1, mock_response2, mock_response3, mock_response4]
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+    assert result == "Polled transcript text"
+
+
+@pytest.mark.asyncio
+async def test_supadata_http_402_credit_exhausted():
+    """Supadata HTTP 402 raises SUPADATA_CREDIT_EXHAUSTED exception."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_response = AsyncMock()
+        mock_response.status_code = 402
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        with pytest.raises(Exception, match="SUPADATA_CREDIT_EXHAUSTED"):
+            await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+
+@pytest.mark.asyncio
+async def test_supadata_http_500_returns_none():
+    """Supadata HTTP 5xx error returns None (no exception raised)."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_response = AsyncMock()
+        mock_response.status_code = 500
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_supadata_empty_content_returns_none():
+    """Supadata returns empty string content, treated as None."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={"content": "", "lang": "en"})
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_supadata_polling_timeout_returns_none():
+    """Supadata polling exceeds 12 attempts, returns None."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls, patch(
+        "app.adapters.youtube.asyncio.sleep", new_callable=AsyncMock
+    ):
+        mock_client = AsyncMock()
+        mock_response_initial = MagicMock()
+        mock_response_initial.status_code = 200
+        mock_response_initial.json = MagicMock(return_value={"jobId": "job-123"})
+
+        # Return "active" for all 12 polls
+        mock_response_polling = MagicMock()
+        mock_response_polling.status_code = 200
+        mock_response_polling.json = MagicMock(return_value={"status": "active"})
+
+        mock_client.post = AsyncMock(
+            side_effect=[mock_response_initial] + [mock_response_polling] * 12
+        )
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_supadata_non_english_lang_logs_and_returns():
+    """Supadata response with lang='ko' is logged but transcript is returned."""
+    from app.adapters.youtube import _run_supadata
+
+    with patch("app.adapters.youtube.httpx.AsyncClient") as mock_client_cls:
+        mock_client = AsyncMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json = MagicMock(return_value={
+            "content": "한국어 자막입니다",
+            "lang": "ko",
+        })
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+        mock_client_cls.return_value = mock_client
+
+        result = await _run_supadata("dQw4w9WgXcQ", "test-key")
+
+    assert result == "한국어 자막입니다"
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_5_fallback_success():
+    """Strategy 1 fails, Strategy 1.5 (Supadata) succeeds, result uses transcript."""
+    from youtube_transcript_api import NoTranscriptFound
+
+    with (
+        patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
+        patch(
+            "app.adapters.youtube._run_supadata",
+            new_callable=AsyncMock,
+            return_value="Supadata transcript text",
+        ),
+        patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
+        patch("app.adapters.youtube._run_pytubefix_audio_stt", return_value=None),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Test Video", "author_name": "Channel"},
+        ),
+        patch("app.core.config.settings") as mock_settings,
+    ):
+        mock_settings.supadata_api_key = "test-key"
+        mock_api_cls.return_value.fetch.side_effect = NoTranscriptFound(
+            "dQw4w9WgXcQ", ("en",), MagicMock()
+        )
+        result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    assert result.error is None
+    assert result.text == "Supadata transcript text"
+    assert result.title == "Test Video"
+
+
+@pytest.mark.asyncio
+async def test_strategy_1_5_skipped_when_key_empty():
+    """When supadata_api_key is empty, Supadata strategy is skipped."""
+    from youtube_transcript_api import NoTranscriptFound
+
+    with (
+        patch("youtube_transcript_api.YouTubeTranscriptApi") as mock_api_cls,
+        patch(
+            "app.adapters.youtube._run_supadata",
+            side_effect=AssertionError("_run_supadata should not be called"),
+        ),
+        patch("app.adapters.youtube._run_yt_dlp_subs", return_value=None),
+        patch("app.adapters.youtube._run_pytubefix_audio_stt", return_value=None),
+        patch(
+            "app.adapters.youtube._fetch_meta",
+            return_value={"title": "Test", "author_name": None},
+        ),
+        patch("app.core.config.settings") as mock_settings,
+    ):
+        mock_settings.supadata_api_key = ""
+        mock_api_cls.return_value.fetch.side_effect = NoTranscriptFound(
+            "dQw4w9WgXcQ", ("en",), MagicMock()
+        )
+        result = await extract("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+
+    # Should fail at the end since all strategies failed
+    assert result.error is not None

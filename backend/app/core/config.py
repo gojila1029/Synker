@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     cors_origins: str = "http://localhost:5173"
 
     groq_api_key: str = ""
+    supadata_api_key: str = ""
 
     # In-process job worker (SYN-V5-002). Enable only after migration 002 is applied.
     worker_enabled: bool = False

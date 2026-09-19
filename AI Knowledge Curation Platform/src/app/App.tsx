@@ -487,7 +487,18 @@ function SourcesScreen() {
         processing.set(item.url, item.status);
       }
       setYoutubeBatchProcessing(new Map(processing));
-      toast.success(`Batch processing complete: ${response.results.filter((r) => r.status === "SUCCESS").length} created`);
+      const successCount = response.results.filter((r) => r.status === "SUCCESS").length;
+      const failureCount = response.results.length - successCount;
+      if (failureCount > 0) {
+        const failedItems = response.results.filter((r) => r.status !== "SUCCESS");
+        const hasCreditsIssue = failedItems.some((r) => r.status === "SUPADATA_CREDIT_EXHAUSTED" || r.status === "IP_BLOCKED");
+        toast.error(
+          `${failureCount} of ${response.results.length} videos failed: ${failedItems.map((r) => `${r.url.replace(/.*v=/, "").substring(0, 11)} (${r.status})`).join(", ")}${hasCreditsIssue ? ". Use Subscribe & Monitor to retry after adding credits." : ""}`
+        );
+      }
+      if (successCount > 0) {
+        toast.success(`${successCount} video(s) processed successfully`);
+      }
     } catch (e) {
       toast.error(`Batch failed: ${e instanceof Error ? e.message : "Request failed"}`);
     }
@@ -1327,7 +1338,7 @@ function KnowledgeReviewScreen() {
   async function handleApprove(id: string) {
     if (noteActing) return;
     setNoteActing("approve");
-    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); }
+    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); setSelectedId(null); }
     catch (e) { toast.error(`Failed to save note: ${e instanceof Error ? e.message : "Request failed"}`); }
     finally { setNoteActing(null); refetch(); }
   }
@@ -1477,11 +1488,12 @@ function KnowledgeReviewScreen() {
 // ─── Vault Browser ────────────────────────────────────────────────────────────
 
 function VaultBrowserScreen() {
-  const { data: tree } = useApi(api.vault.tree, seedVaultTree);
+  const { data: tree, refetch: refetchTree } = useApi(api.vault.tree, seedVaultTree);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileData, setFileData] = useState<VaultFile | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["Indian Insurance", "Claude AI", "Backend Dev"]));
   const [search, setSearch] = useState("");
+  const [vaultRefreshing, setVaultRefreshing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   async function handleSelectFile(path: string) {
@@ -1505,6 +1517,19 @@ function VaultBrowserScreen() {
     if (!search) return true;
     if (node.name.toLowerCase().includes(search.toLowerCase())) return true;
     return node.children?.some(matchesSearch) ?? false;
+  }
+
+  async function handleVaultRefresh() {
+    if (vaultRefreshing) return;
+    setVaultRefreshing(true);
+    try {
+      await refetchTree();
+      toast.success("Vault refreshed");
+    } catch {
+      toast.error("Refresh failed");
+    } finally {
+      setVaultRefreshing(false);
+    }
   }
 
   function renderTree(nodes: VaultNode[], depth = 0) {
@@ -1532,17 +1557,28 @@ function VaultBrowserScreen() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Tree */}
-      <div className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col">
-        <div className="p-3 border-b border-slate-100">
-          <h1 className="text-sm font-semibold text-slate-900 mb-2">Vault Browser</h1>
-          <div className="relative">
-            <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your notes…"
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 outline-none focus:border-blue-300 transition-colors" />
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-6 pt-6">
+        <SectionHeader
+          title="Vault Browser"
+          description="Browse and preview your Obsidian vault notes"
+          action={
+            <Button onClick={handleVaultRefresh} variant="secondary" size="sm" disabled={vaultRefreshing}>
+              <RefreshCw className={`size-3.5${vaultRefreshing ? " animate-spin" : ""}`} /> {vaultRefreshing ? "Refreshing…" : "Refresh"}
+            </Button>
+          }
+        />
+      </div>
+      <div className="flex flex-1 overflow-hidden">
+        {/* Tree */}
+        <div className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col">
+          <div className="p-3 border-b border-slate-100">
+            <div className="relative">
+              <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your notes…"
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 outline-none focus:border-blue-300 transition-colors" />
+            </div>
           </div>
-        </div>
         <div className="flex-1 overflow-y-auto p-2">
           {tree && renderTree(tree)}
         </div>
@@ -1605,6 +1641,7 @@ function VaultBrowserScreen() {
           <EmptyState icon={<FileText className="size-6" />} title="Select a file" description="Click any note in the tree to preview it" />
         </div>
       )}
+      </div>
     </div>
   );
 }
