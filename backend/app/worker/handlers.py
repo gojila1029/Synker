@@ -7,8 +7,10 @@ say so honestly. Handlers should handle all exceptions gracefully and return a
 meaningful error message rather than crashing.
 """
 import json
+import logging
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -20,6 +22,8 @@ from app.adapters.registry import get_adapter
 from app.adapters.youtube_discovery import discover_channel_videos
 from app.ai import generate_note
 
+_log = logging.getLogger(__name__)
+
 # pct -> None. Persists progress + heartbeat for the running job.
 ProgressFn = Callable[[int], Awaitable[None]]
 
@@ -28,6 +32,16 @@ Handler = Callable[[dict[str, Any], ProgressFn, Any], Awaitable[str]]
 
 # Seconds between discovery progress steps. Kept short; tests set it to 0.
 STEP_DELAY_SECONDS = 1.2
+
+# English stopwords to exclude from similarity keywords
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "to", "of", "in", "on", "at",
+    "for", "with", "by", "from", "and", "or", "but", "not", "this", "that",
+    "these", "those", "it", "its", "which", "who", "what", "when", "where",
+    "why", "how",
+}
 
 
 class NoEvidenceError(Exception):
@@ -41,6 +55,96 @@ class NoEvidenceError(Exception):
     source_extractions is."""
 
     code = "NO_EVIDENCE"
+
+
+def _extract_keywords(text: str, title: str = "") -> set[str]:
+    """Extract keywords from title and first 5 sentences of text.
+
+    Returns a set of lowercase tokens with length >= 3, excluding common
+    English stopwords. Algorithm: Jaccard similarity uses keywords to compute
+    overlap between candidate and vault notes.
+    """
+    # Combine title + first 5 sentences
+    combined = title
+    if text:
+        sentences = re.split(r'[.!?]+', text.strip())
+        first_five = sentences[:5]
+        combined = combined + " " + " ".join(first_five)
+
+    # Tokenize: split on whitespace and punctuation
+    tokens = re.findall(r'\b\w+\b', combined.lower())
+
+    # Filter: keep only tokens >= 3 chars and not in stopwords
+    keywords = {t for t in tokens if len(t) >= 3 and t not in STOPWORDS}
+    return keywords
+
+
+async def _compute_candidate_similarity(
+    pool: Any, user_id: Any, candidate_text: str, candidate_title: str
+) -> float:
+    """Compute Jaccard similarity between candidate and vault notes.
+
+    Returns max similarity score in [0.0, 1.0]:
+    - 0.0: no meaningful overlap (unique candidate)
+    - 0.5: moderate overlap (candidate partially covers existing knowledge)
+    - 1.0: near-perfect or exact duplicate
+
+    Uses keyword-based Jaccard: |A ∩ B| / |A ∪ B|.
+    Queries vault_files first; falls back to notes table if empty.
+    Completes in < 5 seconds wall-clock time per AC-005.
+    Returns 0.0 on error or empty vault per AC-007 and AC-008.
+    """
+    if not candidate_text or not candidate_text.strip():
+        return 0.0
+
+    try:
+        t0 = time.monotonic()
+
+        # Fetch vault notes (primary source)
+        async with pool.acquire() as conn:
+            vault_rows = await conn.fetch(
+                "SELECT content FROM vault_files WHERE user_id=$1 LIMIT 200",
+                user_id,
+            )
+
+        # Fallback to notes table if vault is empty
+        if not vault_rows:
+            async with pool.acquire() as conn:
+                vault_rows = await conn.fetch(
+                    "SELECT content FROM notes WHERE user_id=$1 AND status='approved' LIMIT 200",
+                    user_id,
+                )
+
+        # Empty vault: return 0.0 per AC-004
+        if not vault_rows:
+            return 0.0
+
+        # Extract candidate keywords once
+        cand_kw = _extract_keywords(candidate_text, candidate_title)
+        if not cand_kw:
+            return 0.0
+
+        # Compute max Jaccard similarity across all vault notes
+        max_sim = 0.0
+        for row in vault_rows:
+            # Check 5-second timeout per AC-005
+            if time.monotonic() - t0 > 4.5:
+                _log.warning("Similarity computation timeout, returning partial result")
+                break
+
+            vault_kw = _extract_keywords(row["content"] or "")
+            union = len(cand_kw | vault_kw)
+            if union == 0:
+                continue
+            intersection = len(cand_kw & vault_kw)
+            sim = intersection / union
+            if sim > max_sim:
+                max_sim = sim
+
+        return min(1.0, max_sim)
+    except Exception as exc:
+        _log.warning("Similarity computation failed: %s", exc)
+        return 0.0
 
 
 def _safe_filename(title: str) -> str:
@@ -106,6 +210,14 @@ async def _create_candidate_with_evidence(
         if existing:
             return False
 
+        # Compute real Jaccard similarity against vault notes
+        dup_score = await _compute_candidate_similarity(
+            pool,
+            user_id,
+            extracted.text if extracted else fields["summary"],
+            fields["title"],
+        )
+
         await conn.execute(
             """INSERT INTO candidates
                (user_id, source_id, title, source_info, domain, published_at,
@@ -123,7 +235,7 @@ async def _create_candidate_with_evidence(
             fields["recommendation"],
             fields["quality_score"],
             fields["confidence_score"],
-            0.05,
+            dup_score,
             1,
             max(1000, fields["word_count"] * 2),
             fields["summary"],
@@ -265,6 +377,14 @@ async def _discover_youtube_keyword(
             if existing:
                 continue
 
+            # Compute real Jaccard similarity against vault notes
+            dup_score = await _compute_candidate_similarity(
+                pool,
+                user_id,
+                video_extracted.text if video_extracted else fields["summary"],
+                fields["title"],
+            )
+
             await conn.execute(
                 """INSERT INTO candidates
                    (user_id, source_id, title, source_info, domain, published_at,
@@ -282,7 +402,7 @@ async def _discover_youtube_keyword(
                 fields["recommendation"],
                 fields["quality_score"],
                 fields["confidence_score"],
-                0.05,
+                dup_score,
                 1,
                 max(1000, fields["word_count"] * 2),
                 fields["summary"],
@@ -384,6 +504,14 @@ async def _discover_website_keyword(
             if existing:
                 continue
 
+            # Compute real Jaccard similarity against vault notes
+            dup_score = await _compute_candidate_similarity(
+                pool,
+                user_id,
+                website_extracted.text if website_extracted else fields["summary"],
+                fields["title"],
+            )
+
             await conn.execute(
                 """INSERT INTO candidates
                    (user_id, source_id, title, source_info, domain, published_at,
@@ -401,7 +529,7 @@ async def _discover_website_keyword(
                 fields["recommendation"],
                 fields["quality_score"],
                 fields["confidence_score"],
-                0.05,
+                dup_score,
                 1,
                 max(1000, fields["word_count"] * 2),
                 fields["summary"],
