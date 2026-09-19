@@ -418,6 +418,11 @@ function SourcesScreen() {
   const [websiteTopic, setWebsiteTopic] = useState("");
   const [websiteSaving, setWebsiteSaving] = useState(false);
 
+  // Local Folder state
+  const [localFolderPath, setLocalFolderPath] = useState("");
+  const [localFolderTopic, setLocalFolderTopic] = useState("");
+  const [localFolderSaving, setLocalFolderSaving] = useState(false);
+
   // AI parse state
   const [youtubeParseMessage, setYoutubeParseMessage] = useState("");
   const [youtubeParsePending, setYoutubeParsePending] = useState(false);
@@ -538,6 +543,28 @@ function SourcesScreen() {
       toast.error(`Failed to save: ${e instanceof Error ? e.message : "Request failed"}`);
     } finally {
       setWebsiteSaving(false);
+    }
+  }
+
+  async function handleLocalFolderSave() {
+    if (!localFolderPath.trim() || localFolderSaving) return;
+    setLocalFolderSaving(true);
+    try {
+      await api.sources.add({
+        type: "local",
+        url: localFolderPath.trim(),
+        topicId: localFolderTopic || null,
+        discovery_mode: "single",
+        discovery_limit: 1,
+      });
+      toast.success("Local folder source added");
+      setLocalFolderPath("");
+      setLocalFolderTopic("");
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to add: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setLocalFolderSaving(false);
     }
   }
 
@@ -682,14 +709,15 @@ function SourcesScreen() {
 
             {/* Source Type Tabs */}
             <div className="flex gap-1 bg-slate-100 p-1 rounded-lg mb-5 w-fit">
-              {["YouTube", "Website"].map((label) => (
+              {["YouTube", "Website", "Local Folder"].map((label) => (
                 <button
                   key={label}
                   onClick={() => {
                     if (label === "YouTube") { setYoutubeParseMessage(""); setYoutubeParsedConfidence(null); }
-                    else { setWebsiteKeyword(""); }
+                    else if (label === "Website") { setWebsiteKeyword(""); }
+                    else { setLocalFolderPath(""); }
                   }}
-                  className={`px-3 py-1.5 text-xs font-medium rounded transition-all ${label === "YouTube" && !showModal ? "bg-white text-slate-800 shadow-sm" : label === "Website" && !showModal ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                  className="px-3 py-1.5 text-xs font-medium rounded transition-all text-slate-500 hover:text-slate-700"
                 >
                   {label}
                 </button>
@@ -918,7 +946,44 @@ function SourcesScreen() {
               </div>
             </div>
 
-            <div className="flex gap-2 pt-4 border-t border-slate-200">
+            {/* Local Folder Section */}
+            <div className="border-t border-slate-200 pt-4 mt-2">
+              <h3 className="text-sm font-semibold text-slate-800 mb-3">Local Folder or File</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Folder or file path</label>
+                  <input
+                    value={localFolderPath}
+                    onChange={(e) => setLocalFolderPath(e.target.value)}
+                    placeholder="e.g. C:\Users\you\Documents\notes  or  /Users/you/notes/file.md"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Supports .txt, .md, and .pdf files. The path must be accessible from the server.</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                  <select
+                    value={localFolderTopic}
+                    onChange={(e) => setLocalFolderTopic(e.target.value)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                  >
+                    <option value="">Uncategorised</option>
+                    {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                </div>
+                <Button
+                  onClick={handleLocalFolderSave}
+                  variant="primary"
+                  size="sm"
+                  disabled={localFolderSaving || !localFolderPath.trim()}
+                  className="w-full justify-center"
+                >
+                  {localFolderSaving ? "Saving…" : "Save Source"}
+                </Button>
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-4 border-t border-slate-200 mt-4">
               <Button onClick={() => setShowModal(false)} variant="secondary" className="flex-1 justify-center">Close</Button>
             </div>
           </div>

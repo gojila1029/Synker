@@ -81,8 +81,13 @@ CREATE TABLE IF NOT EXISTS public.source_extractions (
   published_at  timestamptz,
   timestamps    jsonb,
   word_count    int         NOT NULL DEFAULT 0,
-  extracted_at  timestamptz NOT NULL DEFAULT now()
+  extracted_at  timestamptz NOT NULL DEFAULT now(),
+  source_url    text
 );
+
+CREATE INDEX IF NOT EXISTS idx_source_extractions_url_staging
+  ON public.source_extractions(source_url)
+  WHERE source_url IS NOT NULL;
 
 -- ── Candidates ────────────────────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS public.candidates (
