@@ -19,7 +19,8 @@ from app.adapters.youtube import _extract_video_id
 from app.adapters.youtube_search import search_youtube
 from app.ai.intent_parser import parse_youtube_intent
 from app.api.deps import get_current_user, get_db
-from app.worker.handlers import _candidate_fields
+from app.db.client import get_pool
+from app.worker.handlers import _candidate_fields, _compute_candidate_similarity
 
 router = APIRouter()
 
@@ -238,6 +239,13 @@ async def create_notes_batch(
 
             # Create candidate with status=approved (Track B auto-approves)
             # db is already a Connection from get_db; use directly (no acquire)
+            pool = await get_pool()
+            dup_score = await _compute_candidate_similarity(
+                pool,
+                user_uuid,
+                extracted.text if (extracted and not extracted.error) else fields["summary"],
+                fields["title"],
+            )
             if True:
                 conn = db
                 candidate_row = await conn.fetchrow(
@@ -258,7 +266,7 @@ async def create_notes_batch(
                     fields["recommendation"],
                     fields["quality_score"],
                     fields["confidence_score"],
-                    0.05,
+                    dup_score,
                     1,
                     max(1000, fields["word_count"] * 2),
                     fields["summary"],
