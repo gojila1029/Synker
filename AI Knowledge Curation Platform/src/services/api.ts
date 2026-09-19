@@ -137,6 +137,7 @@ export const api = {
   },
   notes: {
     list: () => GET<Note[]>("/api/notes?status=pending", seedNotes),
+    listPublished: () => GET<Note[]>("/api/notes?status=approved"),
     approve: (id: string) => POST(`/api/notes/${id}/approve`),
     reject: (id: string) => POST(`/api/notes/${id}/reject`),
   },

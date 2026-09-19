@@ -1319,10 +1319,12 @@ function ProcessingJobsScreen() {
 // ─── Knowledge Review ─────────────────────────────────────────────────────────
 
 function KnowledgeReviewScreen() {
-  const { data: notes, loading, refetch } = useApi(api.notes.list);
-  // Selection is derived from the fetched list by id — never a stored Note object.
-  // This keeps count, list, and detail from disagreeing: when a note leaves the
-  // pending queue (accepted/rejected), it also disappears from the detail pane.
+  const [tab, setTab] = useState<"pending" | "published">("pending");
+  const { data: pendingNotes, loading: loadingPending, refetch } = useApi(api.notes.list);
+  const { data: publishedNotes, loading: loadingPublished, refetch: refetchPublished } = useApi(api.notes.listPublished);
+
+  const notes = tab === "pending" ? pendingNotes : publishedNotes;
+  const loading = tab === "pending" ? loadingPending : loadingPublished;
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showReasoning, setShowReasoning] = useState(false);
 
@@ -1340,7 +1342,7 @@ function KnowledgeReviewScreen() {
     setNoteActing("approve");
     try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); setSelectedId(null); }
     catch (e) { toast.error(`Failed to save note: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setNoteActing(null); refetch(); }
+    finally { setNoteActing(null); refetch(); refetchPublished(); }
   }
   async function handleReject(id: string) {
     if (noteActing) return;
@@ -1356,7 +1358,16 @@ function KnowledgeReviewScreen() {
       <div className="w-72 shrink-0 border-r border-slate-200 bg-white flex flex-col">
         <div className="px-4 py-4 border-b border-slate-100">
           <h1 className="text-base font-semibold text-slate-900">Knowledge Review</h1>
-          <p className="text-xs text-slate-500 mt-0.5">{(notes ?? []).length} notes ready to review</p>
+          <div className="flex gap-1 mt-2">
+            <button onClick={() => { setTab("pending"); setSelectedId(null); }}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${tab === "pending" ? "bg-amber-100 text-amber-700" : "text-slate-500 hover:bg-slate-100"}`}>
+              Pending ({(pendingNotes ?? []).length})
+            </button>
+            <button onClick={() => { setTab("published"); setSelectedId(null); }}
+              className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${tab === "published" ? "bg-green-100 text-green-700" : "text-slate-500 hover:bg-slate-100"}`}>
+              Published ({(publishedNotes ?? []).length})
+            </button>
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           {loading
@@ -1391,14 +1402,19 @@ function KnowledgeReviewScreen() {
                 <h2 className="text-xl font-bold text-slate-900">{selected.title}</h2>
                 <p className="text-sm text-slate-500 mt-1">{selected.source}</p>
               </div>
-              <div className="flex gap-2 shrink-0">
-                <Button onClick={() => handleReject(selected.id)} variant="danger" disabled={noteActing !== null}>
-                  <XCircle className="size-4" /> {noteActing === "reject" ? "Rejecting…" : "Reject"}
-                </Button>
-                <Button onClick={() => handleApprove(selected.id)} variant="primary" disabled={noteActing !== null}>
-                  <CheckCircle2 className="size-4" /> {noteActing === "approve" ? "Saving…" : "Accept & Save"}
-                </Button>
-              </div>
+              {tab === "pending" && (
+                <div className="flex gap-2 shrink-0">
+                  <Button onClick={() => handleReject(selected.id)} variant="danger" disabled={noteActing !== null}>
+                    <XCircle className="size-4" /> {noteActing === "reject" ? "Rejecting…" : "Reject"}
+                  </Button>
+                  <Button onClick={() => handleApprove(selected.id)} variant="primary" disabled={noteActing !== null}>
+                    <CheckCircle2 className="size-4" /> {noteActing === "approve" ? "Saving…" : "Accept & Save"}
+                  </Button>
+                </div>
+              )}
+              {tab === "published" && (
+                <Badge variant="success"><CheckCircle2 className="size-3" />Published</Badge>
+              )}
             </div>
 
             {selected.hasDuplicate && selected.similarTo && (
