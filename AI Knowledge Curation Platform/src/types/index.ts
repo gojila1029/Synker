@@ -106,6 +106,7 @@ export interface Note {
   aiAction: "created" | "merged" | "updated" | "skipped";
   qualityScore: number;
   hasDuplicate: boolean;
+  duplicateScore?: number | null;
   content: string;
   frontmatter: Record<string, string>;
   citations: string[];

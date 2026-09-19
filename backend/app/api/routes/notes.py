@@ -28,19 +28,22 @@ async def list_notes(
     db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
-    base = """SELECT id, title, source, topic_id, source_id, generated_at, ai_action, quality_score,
-                     has_duplicate, content, frontmatter, citations, wiki_links,
-                     similarity_reasoning, similar_to, status
-              FROM notes WHERE user_id=$1"""
+    base = """SELECT n.id, n.title, n.source, n.topic_id, n.source_id, n.generated_at, n.ai_action, n.quality_score,
+                     n.has_duplicate, n.content, n.frontmatter, n.citations, n.wiki_links,
+                     n.similarity_reasoning, n.similar_to, n.status,
+                     c.duplicate_score
+              FROM notes n
+              LEFT JOIN candidates c ON c.id = n.candidate_id
+              WHERE n.user_id=$1"""
     if status:
         rows = await db.fetch(
-            base + " AND status=$2 ORDER BY generated_at DESC",
+            base + " AND n.status=$2 ORDER BY n.generated_at DESC",
             uuid.UUID(user_id),
             status,
         )
     else:
         rows = await db.fetch(
-            base + " ORDER BY generated_at DESC",
+            base + " ORDER BY n.generated_at DESC",
             uuid.UUID(user_id),
         )
     return [
@@ -54,6 +57,7 @@ async def list_notes(
             "aiAction": r["ai_action"],
             "qualityScore": r["quality_score"],
             "hasDuplicate": r["has_duplicate"],
+            "duplicateScore": float(r["duplicate_score"]) if r["duplicate_score"] is not None else None,
             "content": r["content"],
             "frontmatter": r["frontmatter"] or {},
             "citations": r["citations"] or [],

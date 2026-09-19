@@ -1376,6 +1376,9 @@ function KnowledgeReviewScreen() {
                       <div className="w-12 h-1 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-blue-400" style={{ width: `${n.qualityScore}%` }} /></div>
                     </div>
                     <span className="text-xs text-slate-400">Quality {n.qualityScore}</span>
+                    {n.duplicateScore != null && (
+                      <span className="text-xs text-slate-400">· Dup {n.duplicateScore.toFixed(2)}</span>
+                    )}
                   </div>
                 </button>
               ))}
