@@ -1,61 +1,132 @@
-"""Tests for analysis handler queued source filtering.
+"""Unit tests for analysis handler source filtering and Note Gen source_id.
 
-These tests verify that the analysis handler correctly filters sources
-by status='queued' in its SQL query (AC-001, AC-008, AC-002).
+Tests verify behaviour through actual function calls and mock inspection,
+NOT by reading source files as text.
 """
-import re
+import uuid
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from app.api.routes.candidates import approve_candidates
+from app.worker.handlers import _analysis_handler
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+class _AsyncCtxMgr:
+    """Minimal async context manager that yields a pre-created mock conn."""
+
+    def __init__(self, conn: AsyncMock) -> None:
+        self._conn = conn
+
+    async def __aenter__(self) -> AsyncMock:
+        return self._conn
+
+    async def __aexit__(self, *_: object) -> None:
+        pass
 
 
-def test_analysis_handler_sql_includes_status_queued_filter():
-    """Test that the SQL query in handlers.py line 599 includes AND status='queued'.
+def _make_pool(conn: AsyncMock) -> MagicMock:
+    pool = MagicMock()
+    pool.acquire.return_value = _AsyncCtxMgr(conn)
+    return pool
 
-    This test covers AC-001:
-    - The SELECT query for sources includes AND status='queued'
-    - Only queued sources are fetched and processed
+
+def _user(sub: str) -> dict:
+    return {"sub": sub}
+
+
+# ---------------------------------------------------------------------------
+# AC-001 / AC-008: Analysis handler queries only status='queued' sources
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_analysis_handler_fetches_only_queued_sources():
+    """GIVEN an Analysis job for user U
+    WHEN _analysis_handler executes
+    THEN conn.fetch is called with SQL containing AND status='queued'
+    AND the bound parameter is the correct user_id.
+
+    Covers AC-001 and AC-008.
     """
-    # Read the handlers.py file and verify the SQL includes the filter
-    with open("app/worker/handlers.py") as f:
-        content = f.read()
+    user_id = str(uuid.uuid4())
+    job = {"user_id": user_id}
 
-    # Find the analysis handler function
-    pattern = r"async def _analysis_handler.*?FROM sources WHERE user_id=\$1[^)]*\)"
-    match = re.search(pattern, content, re.DOTALL)
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[])  # no queued sources → early exit
+    pool = _make_pool(conn)
 
-    assert match is not None, "Could not find _analysis_handler source SELECT query"
+    await _analysis_handler(job, AsyncMock(), pool)
 
-    query_section = match.group(0)
+    conn.fetch.assert_called_once()
+    sql = conn.fetch.call_args.args[0]
+    bound_user_id = conn.fetch.call_args.args[1]
 
-    # Verify AND status='queued' is present
-    assert "AND status='queued'" in query_section, (
-        f"Expected SQL to contain AND status='queued', but got: {query_section}"
+    assert "AND status='queued'" in sql, (
+        f"SQL must filter to queued sources only; got:\n{sql}"
+    )
+    assert bound_user_id == user_id, (
+        f"SQL must be bound to the job's user_id; got {bound_user_id!r}"
     )
 
 
-def test_note_gen_insert_includes_source_id_column():
-    """Test that the INSERT INTO jobs statement includes source_id.
+@pytest.mark.asyncio
+async def test_analysis_handler_returns_early_when_no_queued_sources():
+    """GIVEN no queued sources exist for the user
+    WHEN _analysis_handler executes
+    THEN it returns immediately with a 0-candidate message
+    AND no further acquire calls are made for extraction.
 
-    This test covers AC-003 and AC-007:
-    - The INSERT statement includes source_id column
-    - The INSERT uses SELECT to fetch source_id from candidates
+    Covers AC-002: only queued sources are processed.
     """
-    # Read the candidates.py file and verify the INSERT includes source_id
-    with open("app/api/routes/candidates.py") as f:
-        content = f.read()
+    job = {"user_id": str(uuid.uuid4())}
 
-    # Find the approve endpoint function
-    pattern = r"INSERT INTO jobs.*?FROM candidates WHERE id=\$2"
-    match = re.search(pattern, content, re.DOTALL)
+    conn = AsyncMock()
+    conn.fetch = AsyncMock(return_value=[])
+    pool = _make_pool(conn)
+    progress = AsyncMock()
 
-    assert match is not None, "Could not find INSERT INTO jobs statement"
+    result = await _analysis_handler(job, progress, pool)
 
-    insert_section = match.group(0)
+    assert "0 candidates" in result
+    assert pool.acquire.call_count == 1
 
-    # Verify source_id is in the column list
-    assert "source_id" in insert_section, (
-        f"Expected INSERT to include source_id column, but got: {insert_section}"
+
+# ---------------------------------------------------------------------------
+# AC-003 / AC-007: Note Gen job INSERT includes source_id
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_approve_candidates_inserts_source_id_in_note_gen_job():
+    """GIVEN a user approves candidate C
+    WHEN approve_candidates runs
+    THEN db.execute is called with an INSERT INTO jobs statement
+    AND that statement includes the source_id column and a SELECT clause.
+
+    Covers AC-003 and AC-007.
+    """
+    user_id = str(uuid.uuid4())
+    candidate_id = str(uuid.uuid4())
+
+    db = AsyncMock()
+    db.execute = AsyncMock(side_effect=["UPDATE 1", None])
+
+    from app.schemas.candidates import BulkIds
+
+    body = BulkIds(ids=[candidate_id])
+    await approve_candidates(body=body, current_user=_user(user_id), db=db)
+
+    assert db.execute.call_count == 2, (
+        "Expected two db.execute calls: UPDATE candidates + INSERT INTO jobs"
     )
 
-    # Verify source_id is being selected
-    assert "SELECT" in insert_section and "source_id" in insert_section, (
-        f"Expected INSERT...SELECT with source_id, but got: {insert_section}"
+    insert_sql = db.execute.call_args_list[1].args[0]
+    assert "INSERT INTO jobs" in insert_sql
+    assert "source_id" in insert_sql, (
+        f"INSERT INTO jobs must include source_id column; got:\n{insert_sql}"
+    )
+    assert "SELECT" in insert_sql, (
+        "INSERT must use SELECT to fetch source_id from candidates"
     )
