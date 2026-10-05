@@ -423,6 +423,11 @@ function SourcesScreen() {
   const [localFolderTopic, setLocalFolderTopic] = useState("");
   const [localFolderSaving, setLocalFolderSaving] = useState(false);
 
+  // PDF state
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [pdfTopic, setPdfTopic] = useState("");
+  const [pdfSaving, setPdfSaving] = useState(false);
+
   // AI parse state
   const [youtubeParseMessage, setYoutubeParseMessage] = useState("");
   const [youtubeParsePending, setYoutubeParsePending] = useState(false);
@@ -579,6 +584,28 @@ function SourcesScreen() {
     }
   }
 
+  async function handlePdfSave() {
+    if (!pdfUrl.trim() || pdfSaving) return;
+    setPdfSaving(true);
+    try {
+      await api.sources.add({
+        type: "pdf",
+        url: pdfUrl.trim(),
+        topicId: pdfTopic || null,
+        discovery_mode: "single",
+        discovery_limit: 1,
+      });
+      toast.success("PDF source added");
+      setPdfUrl("");
+      setPdfTopic("");
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to add: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setPdfSaving(false);
+    }
+  }
+
   async function handleAddTopic() {
     if (!newTopicLabel.trim()) return;
     try {
@@ -720,12 +747,13 @@ function SourcesScreen() {
 
             {/* Source Type Tabs */}
             <div className="flex gap-1 bg-slate-100 p-1 rounded-lg mb-5 w-fit">
-              {["YouTube", "Website", "Local Folder"].map((label) => (
+              {["YouTube", "Website", "PDF", "Local Folder"].map((label) => (
                 <button
                   key={label}
                   onClick={() => {
                     if (label === "YouTube") { setYoutubeParseMessage(""); setYoutubeParsedConfidence(null); }
                     else if (label === "Website") { setWebsiteKeyword(""); }
+                    else if (label === "PDF") { setPdfUrl(""); }
                     else { setLocalFolderPath(""); }
                   }}
                   className="px-3 py-1.5 text-xs font-medium rounded transition-all text-slate-500 hover:text-slate-700"
@@ -990,6 +1018,45 @@ function SourcesScreen() {
                   className="w-full justify-center"
                 >
                   {localFolderSaving ? "Saving…" : "Save Source"}
+                </Button>
+              </div>
+            </div>
+
+            {/* PDF Section */}
+            <div className="border-t border-slate-200 pt-4 mt-2">
+              <h3 className="text-sm font-semibold text-slate-800 mb-3">PDF Document</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">PDF URL or local file path</label>
+                  <input
+                    value={pdfUrl}
+                    onChange={(e) => setPdfUrl(e.target.value)}
+                    data-testid="pdf-url-input"
+                    placeholder="https://example.com/document.pdf or /path/to/file.pdf"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Supports HTTPS URLs or local file paths. The path must be accessible from the server.</p>
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                  <select
+                    value={pdfTopic}
+                    onChange={(e) => setPdfTopic(e.target.value)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                  >
+                    <option value="">Uncategorised</option>
+                    {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                </div>
+                <Button
+                  onClick={handlePdfSave}
+                  data-testid="add-pdf-source-btn"
+                  variant="primary"
+                  size="sm"
+                  disabled={pdfSaving || !pdfUrl.trim()}
+                  className="w-full justify-center"
+                >
+                  {pdfSaving ? "Saving…" : "Save Source"}
                 </Button>
               </div>
             </div>

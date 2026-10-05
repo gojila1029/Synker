@@ -1,11 +1,11 @@
 """Tests for the Web source adapter."""
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import pytest
 
 from app.adapters.base import ExtractionError
-from app.adapters.web import WebAdapter, _html_title
+from app.adapters.web import WebAdapter, _html_title, _is_safe_url
 
 
 def test_html_title():
@@ -23,9 +23,19 @@ async def test_happy_path():
     mock_resp.text = html
     mock_resp.raise_for_status.return_value = None
 
-    with patch("httpx.AsyncClient") as mock_cls, \
-         patch("trafilatura.extract", return_value="Article content here. More words follow."), \
-         patch("trafilatura.extract_metadata", return_value=MagicMock(title="Test Article", author="Jane Doe", date=None)):
+    with (
+        patch("httpx.AsyncClient") as mock_cls,
+        patch(
+            "trafilatura.extract",
+            return_value="Article content here. More words follow.",
+        ),
+        patch(
+            "trafilatura.extract_metadata",
+            return_value=MagicMock(
+                title="Test Article", author="Jane Doe", date=None
+            ),
+        ),
+    ):
         mock_client = AsyncMock()
         mock_client.get = AsyncMock(return_value=mock_resp)
         mock_client.__aenter__ = AsyncMock(return_value=mock_client)
@@ -78,3 +88,50 @@ async def test_http_404_raises():
 
         with pytest.raises(ExtractionError, match="HTTP 404"):
             await WebAdapter().extract("https://example.com/missing")
+
+
+# ─── SEC-007 / SEC-008: SSRF Protection Tests ──────────────────────────────────
+
+
+def test_is_safe_url_rejects_invalid_scheme():
+    """SEC-007: Reject non-http/https schemes."""
+    assert not _is_safe_url("ftp://example.com")
+    assert not _is_safe_url("file:///etc/passwd")
+    assert not _is_safe_url("gopher://example.com")
+    assert not _is_safe_url("data:text/html,<script>alert(1)</script>")
+
+
+def test_is_safe_url_rejects_private_ips():
+    """SEC-008: Reject URLs pointing to private IP ranges."""
+    # Loopback
+    assert not _is_safe_url("http://127.0.0.1")
+    assert not _is_safe_url("http://localhost")
+
+    # Private ranges
+    assert not _is_safe_url("http://10.0.0.1")
+    assert not _is_safe_url("http://172.16.0.1")
+    assert not _is_safe_url("http://192.168.1.1")
+
+    # Link-local
+    assert not _is_safe_url("http://169.254.169.254")
+
+
+def test_is_safe_url_accepts_public_ips():
+    """SEC-008: Accept URLs pointing to public IP addresses."""
+    # These are public IPs (8.8.8.8 is Google DNS)
+    assert _is_safe_url("http://8.8.8.8")
+    assert _is_safe_url("https://1.1.1.1")
+
+
+def test_is_safe_url_accepts_public_hostnames():
+    """SEC-007: Accept valid public hostnames with http/https."""
+    assert _is_safe_url("https://example.com")
+    assert _is_safe_url("http://google.com")
+    assert _is_safe_url("https://github.com/synker")
+
+
+@pytest.mark.asyncio
+async def test_ssrf_attack_rejected():
+    """SEC-008: SSRF attack attempting to reach private IP is rejected."""
+    with pytest.raises(ExtractionError, match="private or reserved IP address"):
+        await WebAdapter().extract("http://127.0.0.1:8000/admin")
