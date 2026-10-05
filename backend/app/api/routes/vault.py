@@ -46,7 +46,7 @@ def _build_tree(rows: list[Any]) -> list[dict[str, Any]]:
 @router.get("/tree")
 async def get_vault_tree(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
@@ -62,7 +62,7 @@ async def get_vault_tree(
 async def get_vault_file(
     path: str = Query(default=""),
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     row = await db.fetchrow(
@@ -106,7 +106,7 @@ async def get_vault_file(
 async def get_pending_sync(
     updated_since: str | None = Query(default=None, alias="updatedSince"),
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     """List vault_files rows for the user, oldest-by-last_modified first, up
     to PENDING_SYNC_MAX_ROWS. The bridge diffs each row's content hash
@@ -169,7 +169,7 @@ class SyncResult(BaseModel):
 async def post_sync_result(
     body: SyncResult,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     """The bridge reports what happened to one file after a sync pass. Logged
     to the existing processing_log table — no new table needed."""

@@ -17,7 +17,7 @@ router = APIRouter()
 @router.get("")
 async def list_sources(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
@@ -49,7 +49,7 @@ async def list_sources(
 async def add_source(
     body: SourceCreate,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     topic_id = body.topic_id
@@ -109,7 +109,7 @@ async def add_source(
 async def reset_source(
     source_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:
@@ -128,7 +128,7 @@ async def reset_source(
 async def delete_source(
     source_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> Response:
     user_id = current_user["sub"]
     try:

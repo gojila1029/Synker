@@ -24,7 +24,7 @@ def _is_uuid(value: str) -> bool:
 @router.get("")
 async def list_candidates(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
@@ -61,7 +61,7 @@ async def list_candidates(
 async def approve_candidates(
     body: BulkIds,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     raw_ids = body.ids
@@ -69,7 +69,8 @@ async def approve_candidates(
     affected = 0
     if ids:
         status = await db.execute(
-            "UPDATE candidates SET status='approved', updated_at=now() WHERE id=ANY($1) AND user_id=$2",
+            "UPDATE candidates SET status='approved', updated_at=now() "
+            "WHERE id=ANY($1) AND user_id=$2",
             ids,
             uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
         )
@@ -78,8 +79,8 @@ async def approve_candidates(
         # Queue Note Gen jobs for approved candidates
         for cid in ids:
             await db.execute(
-                """INSERT INTO jobs (user_id, candidate_id, source_title, type)
-                   SELECT $1, $2, title, 'Note Gen' FROM candidates WHERE id=$2""",
+                """INSERT INTO jobs (user_id, candidate_id, source_id, source_title, type)
+                   SELECT $1, $2, source_id, title, 'Note Gen' FROM candidates WHERE id=$2""",
                 uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
                 cid,
             )
@@ -90,7 +91,7 @@ async def approve_candidates(
 async def reject_candidates(
     body: BulkIds,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     raw_ids = body.ids
@@ -98,7 +99,8 @@ async def reject_candidates(
     affected = 0
     if ids:
         status = await db.execute(
-            "UPDATE candidates SET status='rejected', updated_at=now() WHERE id=ANY($1) AND user_id=$2",
+            "UPDATE candidates SET status='rejected', updated_at=now() "
+            "WHERE id=ANY($1) AND user_id=$2",
             ids,
             uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0),
         )

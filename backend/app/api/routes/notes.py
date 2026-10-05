@@ -25,7 +25,7 @@ def _rows_affected(result: Any) -> int | None:
 async def list_notes(
     status: str | None = None,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     base = (
@@ -76,7 +76,7 @@ async def list_notes(
 async def approve_note(
     note_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:
@@ -108,7 +108,7 @@ async def approve_note(
 async def reject_note(
     note_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:

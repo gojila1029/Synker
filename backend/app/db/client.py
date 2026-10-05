@@ -4,14 +4,15 @@ asyncpg connection pool.
 statement_cache_size=0 is REQUIRED for Supabase's PgBouncer Session Pooler.
 Omitting it causes "prepared statement already exists" errors under concurrent load.
 """
-import json
-from typing import Optional
+from __future__ import annotations
 
-import asyncpg
+import json
+
+import asyncpg  # type: ignore[import-untyped]
 
 from app.core.config import settings
 
-_pool: Optional[asyncpg.Pool] = None  # type: ignore[type-arg]
+_pool: asyncpg.Pool[asyncpg.Connection] | None = None
 
 
 async def _init_conn(conn: asyncpg.Connection) -> None:
@@ -24,7 +25,7 @@ async def _init_conn(conn: asyncpg.Connection) -> None:
         )
 
 
-async def get_pool() -> asyncpg.Pool:  # type: ignore[type-arg]
+async def get_pool() -> asyncpg.Pool[asyncpg.Connection]:
     global _pool
     if _pool is None:
         dsn = settings.database_url.replace("postgresql+asyncpg://", "postgresql://", 1)

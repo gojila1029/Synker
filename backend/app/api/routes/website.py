@@ -28,7 +28,7 @@ class ParseIntentResponse(BaseModel):
 async def parse_intent_endpoint(
     body: ParseIntentRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> ParseIntentResponse:
     """Parse a user's natural language message into website search parameters.
 

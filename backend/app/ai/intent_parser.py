@@ -42,6 +42,7 @@ async def parse_youtube_intent(
     """
     try:
         import anthropic
+        from anthropic.types import TextBlock
     except ImportError:
         return ParsedIntent(
             search_query=message,
@@ -90,7 +91,8 @@ Respond with ONLY the JSON object, no markdown or explanation."""
             messages=[{"role": "user", "content": prompt}],
         )
 
-        text = response.content[0].text if response.content else ""
+        text_block = next((b for b in response.content if isinstance(b, TextBlock)), None)
+        text = text_block.text if text_block else ""
         parsed = json.loads(text.strip())
 
         search_query = parsed.get("search_query", message)
@@ -148,6 +150,7 @@ async def parse_website_intent(
     """
     try:
         import anthropic
+        from anthropic.types import TextBlock
     except ImportError:
         return ParsedIntent(
             search_query=message,
@@ -196,7 +199,8 @@ Respond with ONLY the JSON object, no markdown or explanation."""
             messages=[{"role": "user", "content": prompt}],
         )
 
-        text = response.content[0].text if response.content else ""
+        text_block = next((b for b in response.content if isinstance(b, TextBlock)), None)
+        text = text_block.text if text_block else ""
         parsed = json.loads(text.strip())
 
         search_query = parsed.get("search_query", message)

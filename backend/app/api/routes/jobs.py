@@ -25,7 +25,7 @@ def _format_duration(started_at: Any, finished_at: Any) -> str:
 @router.get("")
 async def list_jobs(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     try:
@@ -60,7 +60,7 @@ async def list_jobs(
 async def delete_job(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> Response:
     user_id = current_user["sub"]
     try:
@@ -78,7 +78,7 @@ async def delete_job(
 async def cancel_job(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:
@@ -99,7 +99,7 @@ async def cancel_job(
 async def retry_job(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:

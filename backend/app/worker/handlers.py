@@ -596,7 +596,7 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             sources = await conn.fetch(
                 """SELECT id, type, title, url, source_scope, discovery_mode,
                           keyword, discovery_limit
-                   FROM sources WHERE user_id=$1""",
+                   FROM sources WHERE user_id=$1 AND status='queued'""",
                 user_id,
             )
 

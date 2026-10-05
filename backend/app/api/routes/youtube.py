@@ -107,7 +107,7 @@ async def search_youtube_endpoint(
 async def parse_intent_endpoint(
     body: ParseIntentRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> ParsedIntentResponse:
     """Parse a user's natural language message into search parameters.
 
@@ -137,7 +137,7 @@ async def parse_intent_endpoint(
 async def create_notes_batch(
     body: BatchNoteRequest,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> BatchNoteResponse:
     """Create notes from multiple YouTube video URLs (Track B workflow).
 

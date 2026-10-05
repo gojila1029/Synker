@@ -42,7 +42,7 @@ _request_id_var: ContextVar[str] = ContextVar("request_id", default="-")
 
 class _RequestIdFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        record.request_id = _request_id_var.get("-")  # type: ignore[attr-defined]
+        record.request_id = _request_id_var.get("-")
         return True
 
 

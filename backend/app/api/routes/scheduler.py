@@ -21,7 +21,7 @@ def _is_uuid(value: str) -> bool:
 @router.post("/trigger")
 async def trigger_discovery(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     uid = uuid.UUID(user_id) if _is_uuid(user_id) else uuid.UUID(int=0)
@@ -47,7 +47,7 @@ async def trigger_discovery(
 @router.get("/status")
 async def get_scheduler_status(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:

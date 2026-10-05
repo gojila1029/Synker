@@ -75,7 +75,7 @@ async def _fetch_and_extract_page(url: str, timeout: float = 15.0) -> str | None
         return None
 
     try:
-        import trafilatura  # type: ignore[import-untyped]
+        import trafilatura
     except ImportError:
         return None
 

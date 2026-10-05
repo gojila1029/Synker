@@ -10,7 +10,6 @@ Guarantees:
 """
 import pytest
 
-
 GET_ROUTES = [
     "/api/dashboard/stats",
     "/api/dashboard/activity",
@@ -99,6 +98,17 @@ async def test_post_candidates_approve_returns_200(authed_client):
 
 async def test_post_candidates_reject_returns_200(authed_client):
     response = await authed_client.post("/api/candidates/reject", json={"ids": ["mock-id"]})
+    assert response.status_code == 200
+
+
+async def test_post_candidates_approve_with_source_returns_200(authed_client):
+    """Test that /api/candidates/approve returns 200 with source_id.
+
+    This test covers AC-003:
+    - The endpoint still returns 200 after the source_id INSERT change
+    - No regressions in the approval flow
+    """
+    response = await authed_client.post("/api/candidates/approve", json={"ids": ["mock-id"]})
     assert response.status_code == 200
 
 

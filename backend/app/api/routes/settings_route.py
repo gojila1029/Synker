@@ -41,7 +41,7 @@ JSONB_SECTIONS = {"ai_providers", "privacy", "discovery", "cleanup", "notificati
 @router.get("", response_model=SettingsRead)
 async def get_settings(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> SettingsRead:
     import uuid as _uuid
     try:
@@ -73,7 +73,7 @@ async def update_settings(
     section: str,
     body: dict[str, Any],
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     import uuid as _uuid
     try:
