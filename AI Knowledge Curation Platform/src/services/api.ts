@@ -1,4 +1,4 @@
-﻿import type { DashboardStats, ActivityEvent, Topic, Source, Candidate, Job, Note, VaultNode, VaultFile, Settings } from "../types";
+﻿import type { DashboardStats, ActivityEvent, Topic, Source, Candidate, Job, Note, VaultNode, VaultFile, Settings, YouTubeSearchResponse, ParsedIntent, BatchNoteResponse } from "../types";
 import {
   seedStats, seedActivity, seedTopics, seedSources, seedCandidates,
   seedJobs, seedNotes, seedVaultTree, seedVaultFile, seedSettings,
@@ -6,6 +6,17 @@ import {
 import { supabase } from "@/lib/supabase";
 
 export const BASE = (import.meta.env.VITE_API_BASE as string | undefined) ?? "http://localhost:8000";
+
+function httpErrorMessage(status: number, text: string): string {
+  if (text) {
+    try {
+      const parsed = JSON.parse(text);
+      if (typeof parsed?.detail === "string") return parsed.detail;
+    } catch {}
+    return `HTTP ${status}: ${text.slice(0, 120)}`;
+  }
+  return `HTTP ${status}`;
+}
 
 export class UnauthorizedError extends Error {
   constructor() { super("Session expired — please sign in again"); }
@@ -49,8 +60,9 @@ async function POST<T = void>(path: string, body?: unknown): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
+    throw new Error(httpErrorMessage(res.status, text));
   }
+  _failStreak = 0;
   _isDemo = false;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -66,8 +78,9 @@ async function PATCH<T = void>(path: string, body: unknown): Promise<T> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
+    throw new Error(httpErrorMessage(res.status, text));
   }
+  _failStreak = 0;
   _isDemo = false;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
@@ -82,9 +95,27 @@ async function DELETE_REQ(path: string): Promise<void> {
   if (res.status === 401) throw new UnauthorizedError();
   if (!res.ok) {
     const text = await res.text().catch(() => "");
-    throw new Error(`HTTP ${res.status}${text ? ": " + text.slice(0, 120) : ""}`);
+    throw new Error(httpErrorMessage(res.status, text));
   }
   _isDemo = false;
+}
+
+async function UPLOAD<T>(path: string, formData: FormData): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: formData,
+    signal: AbortSignal.timeout(120000),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(httpErrorMessage(res.status, text));
+  }
+  _failStreak = 0;
+  _isDemo = false;
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
 }
 
 export const api = {
@@ -102,6 +133,14 @@ export const api = {
     add: (payload: Partial<Source>) => POST<Source>("/api/sources", payload),
     delete: (id: string) => DELETE_REQ(`/api/sources/${id}`),
     reset: (id: string) => PATCH(`/api/sources/${id}/reset`, {}),
+    upload: (files: File[], relativePaths: string[], type: "local" | "pdf") => {
+      const formData = new FormData();
+      files.forEach(f => formData.append("files", f));
+      relativePaths.forEach(p => formData.append("relative_paths", p));
+      return UPLOAD<{ status: string; uploadId: string; paths: string[]; message: string }>(
+        "/api/sources/upload", formData
+      );
+    },
   },
   candidates: {
     list: () => GET<Candidate[]>("/api/candidates", seedCandidates),
@@ -123,7 +162,8 @@ export const api = {
     delete: (id: string) => DELETE_REQ(`/api/jobs/${id}`),
   },
   notes: {
-    list: () => GET<Note[]>("/api/notes", seedNotes),
+    list: () => GET<Note[]>("/api/notes?status=pending", seedNotes),
+    listPublished: () => GET<Note[]>("/api/notes?status=approved"),
     approve: (id: string) => POST(`/api/notes/${id}/approve`),
     reject: (id: string) => POST(`/api/notes/${id}/reject`),
   },
@@ -134,7 +174,6 @@ export const api = {
   settings: {
     get: () => GET<Settings>("/api/settings", seedSettings),
     update: (section: string, payload: unknown) => PATCH(`/api/settings/${section}`, payload),
-    browseDirectory: () => GET<{ path: string }>("/api/settings/browse-directory", { path: "" }),
   },
   scheduler: {
     trigger: () => POST("/api/scheduler/trigger"),
@@ -142,5 +181,16 @@ export const api = {
       "/api/scheduler/status",
       { last_run_at: null, next_run_at: null, is_running: false }
     ),
+  },
+  youtube: {
+    search: (q: string, limit?: number) => GET<YouTubeSearchResponse>(
+      `/api/youtube/search?q=${encodeURIComponent(q)}${limit ? `&limit=${limit}` : ""}`,
+      { results: [] }
+    ),
+    parseIntent: (message: string) => POST<ParsedIntent>("/api/youtube/parse-intent", { message }),
+    createNotesBatch: (videoUrls: string[]) => POST<BatchNoteResponse>("/api/youtube/notes/batch", { video_urls: videoUrls }),
+  },
+  website: {
+    parseIntent: (message: string) => POST<ParsedIntent>("/api/website/parse-intent", { message }),
   },
 };

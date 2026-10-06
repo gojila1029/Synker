@@ -25,22 +25,25 @@ def _rows_affected(result: Any) -> int | None:
 async def list_notes(
     status: str | None = None,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
-    base = """SELECT id, title, source, generated_at, ai_action, quality_score,
-                     has_duplicate, content, frontmatter, citations, wiki_links,
-                     similarity_reasoning, similar_to, status
-              FROM notes WHERE user_id=$1"""
+    base = (
+        "SELECT n.id, n.title, n.source, n.topic_id, n.source_id, n.generated_at, "
+        "n.ai_action, n.quality_score, n.has_duplicate, n.content, n.frontmatter, "
+        "n.citations, n.wiki_links, n.similarity_reasoning, n.similar_to, n.status, "
+        "c.duplicate_score FROM notes n LEFT JOIN candidates c ON c.id = "
+        "n.candidate_id WHERE n.user_id=$1"
+    )
     if status:
         rows = await db.fetch(
-            base + " AND status=$2 ORDER BY generated_at DESC",
+            base + " AND n.status=$2 ORDER BY n.generated_at DESC",
             uuid.UUID(user_id),
             status,
         )
     else:
         rows = await db.fetch(
-            base + " ORDER BY generated_at DESC",
+            base + " ORDER BY n.generated_at DESC",
             uuid.UUID(user_id),
         )
     return [
@@ -48,10 +51,15 @@ async def list_notes(
             "id": str(r["id"]),
             "title": r["title"],
             "source": r["source"],
+            "topicId": str(r["topic_id"]) if r["topic_id"] else None,
+            "sourceId": str(r["source_id"]) if r["source_id"] else None,
             "generatedAt": r["generated_at"].isoformat() if r["generated_at"] else None,
             "aiAction": r["ai_action"],
             "qualityScore": r["quality_score"],
             "hasDuplicate": r["has_duplicate"],
+            "duplicateScore": (
+                float(r["duplicate_score"]) if r["duplicate_score"] is not None else None
+            ),
             "content": r["content"],
             "frontmatter": r["frontmatter"] or {},
             "citations": r["citations"] or [],
@@ -68,7 +76,7 @@ async def list_notes(
 async def approve_note(
     note_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:
@@ -100,7 +108,7 @@ async def approve_note(
 async def reject_note(
     note_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:

@@ -22,4 +22,5 @@ class Job(CamelModel):
     started_at: str
     duration: str
     error: Optional[str] = None
+    error_code: Optional[str] = None
     artifact_path: Optional[str] = None

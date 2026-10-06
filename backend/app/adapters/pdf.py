@@ -12,6 +12,8 @@ import httpx
 
 from app.adapters.base import ExtractedContent, SourceAdapter
 
+MAX_PDF_SIZE = 52_428_800  # 50 MB
+
 
 class PdfAdapter(SourceAdapter):
     """Extract text and metadata from a PDF source."""
@@ -20,6 +22,23 @@ class PdfAdapter(SourceAdapter):
         if url.startswith("http://") or url.startswith("https://"):
             try:
                 async with httpx.AsyncClient(timeout=60.0) as client:
+                    resp = await client.head(url)
+                    resp.raise_for_status()
+                    content_length = resp.headers.get("content-length")
+                    if content_length:
+                        try:
+                            size = int(content_length)
+                            if size > MAX_PDF_SIZE:
+                                return ExtractedContent(
+                                    text="",
+                                    title="",
+                                    source_url=url,
+                                    source_type="pdf",
+                                    error="PDF file too large: exceeds 50MB limit",
+                                )
+                        except ValueError:
+                            pass
+
                     resp = await client.get(url)
                     resp.raise_for_status()
                     data = resp.content
@@ -48,6 +67,15 @@ class PdfAdapter(SourceAdapter):
                     source_url=url,
                     source_type="pdf",
                     error=f"File not found: {url}",
+                )
+            size = p.stat().st_size
+            if size > MAX_PDF_SIZE:
+                return ExtractedContent(
+                    text="",
+                    title="",
+                    source_url=url,
+                    source_type="pdf",
+                    error="PDF file too large: exceeds 50MB limit",
                 )
             data = p.read_bytes()
 

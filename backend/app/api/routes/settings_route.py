@@ -1,7 +1,5 @@
-﻿import asyncio
-import base64
+﻿import base64
 import os
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import asyncpg
@@ -43,10 +41,14 @@ JSONB_SECTIONS = {"ai_providers", "privacy", "discovery", "cleanup", "notificati
 @router.get("", response_model=SettingsRead)
 async def get_settings(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> SettingsRead:
-    user_id = current_user["sub"]
-    row = await db.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", user_id)
+    import uuid as _uuid
+    try:
+        uid = _uuid.UUID(current_user["sub"])
+    except (ValueError, KeyError):
+        return SettingsRead()
+    row = await db.fetchrow("SELECT * FROM user_settings WHERE user_id = $1", uid)
     if row is None:
         return SettingsRead()
     ai_raw: dict = row["ai_providers"] or {}
@@ -71,9 +73,13 @@ async def update_settings(
     section: str,
     body: dict[str, Any],
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
-    user_id = current_user["sub"]
+    import uuid as _uuid
+    try:
+        uid = _uuid.UUID(current_user["sub"])
+    except (ValueError, KeyError):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid user ID")
     valid = {"vault", "ai_providers", "privacy", "discovery", "cleanup", "notifications", "team"}
     if section not in valid:
         raise HTTPException(
@@ -87,7 +93,7 @@ async def update_settings(
                VALUES ($1, $2, $3)
                ON CONFLICT (user_id) DO UPDATE
                SET vault_path = $2, vault_name = $3, updated_at = now()""",
-            user_id,
+            uid,
             body.get("path", ""),
             body.get("name", "My Vault"),
         )
@@ -98,7 +104,7 @@ async def update_settings(
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET team_tier = $2, updated_at = now()""",
-            user_id,
+            uid,
             tier,
         )
     elif section == "ai_providers":
@@ -112,7 +118,7 @@ async def update_settings(
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET ai_providers = $2, updated_at = now()""",
-            user_id,
+            uid,
             data,
         )
     else:
@@ -122,33 +128,31 @@ async def update_settings(
                VALUES ($1, $2)
                ON CONFLICT (user_id) DO UPDATE
                SET {col} = $2, updated_at = now()""",
-            user_id,
+            uid,
             body,
         )
 
     return {"section": section, "updated": True}
 
 
-def _open_directory_dialog() -> str:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-        root = tk.Tk()
-        root.withdraw()
-        root.wm_attributes("-topmost", 1)
-        path = filedialog.askdirectory(title="Select Obsidian Vault Folder")
-        root.destroy()
-        return path or ""
-    except Exception:
-        return ""
-
-
 @router.get("/browse-directory")
 async def browse_directory(
     _current_user: dict[str, Any] = Depends(get_current_user),
-) -> dict[str, str]:
-    loop = asyncio.get_event_loop()
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        path = await loop.run_in_executor(pool, _open_directory_dialog)
-    return {"path": path}
+) -> dict[str, Any]:
+    """Deprecated: this backend runs on Railway, a headless container with no
+    local display and no access to any user's filesystem — a server-side
+    tkinter dialog here can never open on the user's screen. It used to
+    silently return {"path": ""} on every call, which looked identical to "no
+    folder chosen." Real folder selection now happens in the Local Sync
+    Bridge (bridge/), which runs on the user's own machine where a display
+    and filesystem actually exist. See CLAUDE.md "Obsidian vault safety."
+    """
+    raise HTTPException(
+        status_code=status.HTTP_410_GONE,
+        detail=(
+            "This endpoint is deprecated. Folder selection now happens in the "
+            "Local Sync Bridge, which runs on your own machine. See the "
+            "Synker Local Sync Bridge setup docs."
+        ),
+    )
 

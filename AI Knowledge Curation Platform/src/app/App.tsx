@@ -6,12 +6,13 @@ import { LoginPage } from "./LoginPage";
 import {
   LayoutDashboard, Globe, CheckSquare, Cpu, BookOpen, FolderOpen, Settings,
   RefreshCw, Play, ChevronDown, ChevronRight, Tag, Shield, AlertTriangle,
-  CheckCircle2, XCircle, Clock, FileText, Link2, Zap, Plus, Trash2,
-  Youtube, File, FolderClosed, Search, ArrowRight, X, Eye, EyeOff,
+  CheckCircle2, XCircle, Clock, FileText, Link2, Zap, Plus, Trash2, Eye, EyeOff,
+  Youtube, File, FolderClosed, Search, ArrowRight, X,
   GitMerge, SkipForward, Wifi, WifiOff, RotateCcw, Activity,
 } from "lucide-react";
 import { useApi } from "../hooks/useApi";
 import { api, isDemoMode, BASE } from "../services/api";
+import { sourceScopeLabel } from "./sourceScopeLabel";
 import type { Topic, Source, Candidate, Job, Note, VaultNode, VaultFile } from "../types";
 import {
   seedTopics, seedSources, seedVaultTree, seedSettings,
@@ -175,11 +176,13 @@ function formatDateTime(ts: string): string {
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 
-function DashboardScreen() {
+function DashboardScreen({ onNavigateToSources }: { onNavigateToSources: () => void }) {
   const { data: stats, loading: statsLoading, refetch: refetchStats } = useApi(api.dashboard.getStats);
   const { data: activity, loading: actLoading } = useApi(api.dashboard.getActivity);
   const { data: candidates } = useApi(api.candidates.list);
   const { data: jobs } = useApi(api.jobs.list);
+  const { data: sources } = useApi(api.sources.list);
+  const hasNoSources = sources !== null && sources.length === 0;
 
   const pipeline = ["discover", "analyze", "approve", "extract", "transcribe", "generate", "verify", "graphify", "cleanup"];
   const pipelineLabels: Record<string, string> = { discover: "Discover", analyze: "Analyze", approve: "Approve", extract: "Extract", transcribe: "Transcribe", generate: "Generate", verify: "Verify", graphify: "Graphify", cleanup: "Cleanup" };
@@ -194,15 +197,32 @@ function DashboardScreen() {
 
   const [syncStatus, setSyncStatus] = useState<{ last_run_at: string | null; next_run_at: string | null; is_running: boolean }>({ last_run_at: null, next_run_at: null, is_running: false });
   useEffect(() => {
-    api.scheduler.status().then(setSyncStatus);
-    const id = setInterval(() => api.scheduler.status().then(setSyncStatus), 30000);
-    return () => clearInterval(id);
+    const poll = () => {
+      if (document.visibilityState === "visible") {
+        api.scheduler.status().then(setSyncStatus);
+      }
+    };
+
+    poll();
+    const jitter = Math.random() * 10000;
+    const id = setInterval(poll, 30000 + jitter);
+    const onVisibility = () => { if (document.visibilityState === "visible") poll(); };
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, []);
 
   const [triggering, setTriggering] = useState(false);
   const [retryingIds, setRetryingIds] = useState<Set<string>>(new Set());
   async function handleTrigger() {
     if (triggering) return;
+    if (hasNoSources) {
+      onNavigateToSources();
+      return;
+    }
     setTriggering(true);
     try { await api.scheduler.trigger(); toast.success("Discovery run triggered"); refetchStats(); }
     catch (e) { toast.error(`Failed to trigger run: ${e instanceof Error ? e.message : "Request failed"}`); }
@@ -232,15 +252,17 @@ function DashboardScreen() {
         <div>
           <h1 className="text-2xl font-bold text-slate-900">Good morning 👋</h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            {syncStatus.is_running
-              ? "Discovery running now..."
-              : syncStatus.last_run_at
-                ? `Last sync ran ${timeAgo(syncStatus.last_run_at)}${syncStatus.next_run_at ? ` · Next in ${timeUntil(syncStatus.next_run_at)}` : ""}`
-                : "No sync runs yet"}
+            {hasNoSources
+              ? "No sources yet — add one to get started"
+              : syncStatus.is_running
+                ? "Discovery running now..."
+                : syncStatus.last_run_at
+                  ? `Last sync ran ${timeAgo(syncStatus.last_run_at)}${syncStatus.next_run_at ? ` · Next in ${timeUntil(syncStatus.next_run_at)}` : ""}`
+                  : "No sync runs yet"}
           </p>
         </div>
         <Button onClick={handleTrigger} variant="primary" disabled={triggering}>
-          <Play className="size-4" />{triggering ? "Running…" : "Run Discovery Now"}
+          <Play className="size-4" />{triggering ? "Running…" : hasNoSources ? "Add a Source" : "Run Discovery Now"}
         </Button>
       </div>
 
@@ -370,10 +392,55 @@ function SourcesScreen() {
   const { data: topics, refetch: refetchTopics } = useApi(api.topics.list, seedTopics);
   const [filter, setFilter] = useState<"all" | Source["type"]>("all");
   const [showModal, setShowModal] = useState(false);
-  const [newUrl, setNewUrl] = useState("");
-  const [newType, setNewType] = useState<Source["type"]>("web");
-  const [newTopic, setNewTopic] = useState("");
   const [newTopicLabel, setNewTopicLabel] = useState("");
+
+  // YouTube Track B state
+  const [youtubeMode, setYoutubeMode] = useState<"find" | "monitor">("find");
+  const [youtubeQuery, setYoutubeQuery] = useState("");
+  const [youtubeLimit, setYoutubeLimit] = useState(10);
+  const [youtubeSearchResults, setYoutubeSearchResults] = useState<YouTubeSearchItem[]>([]);
+  const [youtubeSelected, setYoutubeSelected] = useState<Set<string>>(new Set());
+  const [youtubeSearching, setYoutubeSearching] = useState(false);
+  const [youtubeBatchProcessing, setYoutubeBatchProcessing] = useState<Map<string, string>>(new Map());
+  const youtubeSearchAbortRef = useRef<AbortController | null>(null);
+
+  // YouTube Track A state
+  const [youtubeTrackAMode, setYoutubeTrackAMode] = useState<"channel" | "keyword">("channel");
+  const [youtubeTrackAUrl, setYoutubeTrackAUrl] = useState("");
+  const [youtubeTrackAKeyword, setYoutubeTrackAKeyword] = useState("");
+  const [youtubeTrackALimit, setYoutubeTrackALimit] = useState(25);
+  const [youtubeTrackATopic, setYoutubeTrackATopic] = useState("");
+  const [youtubeTrackASaving, setYoutubeTrackASaving] = useState(false);
+
+  // Website state
+  const [websiteKeyword, setWebsiteKeyword] = useState("");
+  const [websiteLimit, setWebsiteLimit] = useState(5);
+  const [websiteTopic, setWebsiteTopic] = useState("");
+  const [websiteSaving, setWebsiteSaving] = useState(false);
+
+  // Local Folder state
+  const [localFolderPath, setLocalFolderPath] = useState("");
+  const [localFolderTopic, setLocalFolderTopic] = useState("");
+  const [localFolderSaving, setLocalFolderSaving] = useState(false);
+  const [localFiles, setLocalFiles] = useState<File[]>([]);
+  const [localRelPaths, setLocalRelPaths] = useState<string[]>([]);
+  const [localDisplayName, setLocalDisplayName] = useState<string>("");
+  const [localFolderUploading, setLocalFolderUploading] = useState(false);
+  const localFolderInputRef = useRef<HTMLInputElement>(null);
+  const localFileInputRef = useRef<HTMLInputElement>(null);
+
+  // PDF state
+  const [pdfUrl, setPdfUrl] = useState("");
+  const [pdfTopic, setPdfTopic] = useState("");
+  const [pdfSaving, setPdfSaving] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const pdfFileInputRef = useRef<HTMLInputElement>(null);
+
+  // AI parse state
+  const [youtubeParseMessage, setYoutubeParseMessage] = useState("");
+  const [youtubeParsePending, setYoutubeParsePending] = useState(false);
+  const [youtubeParsedConfidence, setYoutubeParsedConfidence] = useState<number | null>(null);
 
   const filtered = (sources ?? []).filter((s) => filter === "all" || s.type === filter);
   const tabs: { key: "all" | Source["type"]; label: string }[] = [
@@ -381,16 +448,215 @@ function SourcesScreen() {
     { key: "web", label: "Web" }, { key: "pdf", label: "PDF" }, { key: "local", label: "Local Folder" },
   ];
 
-  const [adding, setAdding] = useState(false);
-  async function handleAddSource() {
-    if (!newUrl || adding) return;
-    setAdding(true);
+  async function handleYoutubeSearch() {
+    if (!youtubeQuery.trim() || youtubeSearching) return;
+    youtubeSearchAbortRef.current = new AbortController();
+    setYoutubeSearching(true);
+    setYoutubeSelected(new Set());
     try {
-      await api.sources.add({ url: newUrl, type: newType, topicId: newTopic || null });
-      toast.success("Source added successfully");
-      setShowModal(false); setNewUrl(""); refetch();
-    } catch (e) { toast.error(`Failed to add source: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setAdding(false); }
+      const response = await api.youtube.search(youtubeQuery.trim(), youtubeLimit);
+      setYoutubeSearchResults(response.results || []);
+      if (response.error) toast.error(`Search failed: ${response.error}`);
+    } catch (e) {
+      toast.error(`Search error: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setYoutubeSearching(false);
+    }
+  }
+
+  async function handleYoutubeParseIntent() {
+    if (!youtubeParseMessage.trim() || youtubeParsePending) return;
+    setYoutubeParsePending(true);
+    try {
+      const response = await api.youtube.parseIntent(youtubeParseMessage.trim());
+      setYoutubeQuery(response.search_query);
+      setYoutubeLimit(response.limit);
+      setYoutubeParsedConfidence(response.confidence);
+      if (response.confidence < 0.6) {
+        toast.warning("Low confidence — please review the parsed query");
+      }
+      setYoutubeSearchResults([]);
+      setYoutubeSelected(new Set());
+    } catch (e) {
+      toast.error(`Parse failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setYoutubeParsePending(false);
+    }
+  }
+
+  async function handleCreateNotesFromSelected() {
+    if (youtubeSelected.size === 0 || youtubeBatchProcessing.size > 0) return;
+    const urls = Array.from(youtubeSelected).map((videoId) => {
+      const result = youtubeSearchResults.find((r) => r.video_id === videoId);
+      return result?.url || "";
+    }).filter(Boolean as any);
+
+    const processing = new Map<string, string>();
+    urls.forEach((url) => processing.set(url, "PROCESSING"));
+    setYoutubeBatchProcessing(processing);
+
+    try {
+      const response = await api.youtube.createNotesBatch(urls);
+      for (const item of response.results) {
+        processing.set(item.url, item.status);
+      }
+      setYoutubeBatchProcessing(new Map(processing));
+      const successCount = response.results.filter((r) => r.status === "SUCCESS").length;
+      const failureCount = response.results.length - successCount;
+      if (failureCount > 0) {
+        const failedItems = response.results.filter((r) => r.status !== "SUCCESS");
+        const hasCreditsIssue = failedItems.some((r) => r.status === "SUPADATA_CREDIT_EXHAUSTED" || r.status === "IP_BLOCKED");
+        toast.error(
+          `${failureCount} of ${response.results.length} videos failed: ${failedItems.map((r) => `${r.url.replace(/.*v=/, "").substring(0, 11)} (${r.status})`).join(", ")}${hasCreditsIssue ? ". Use Subscribe & Monitor to retry after adding credits." : ""}`
+        );
+      }
+      if (successCount > 0) {
+        toast.success(`${successCount} video(s) processed successfully`);
+      }
+    } catch (e) {
+      toast.error(`Batch failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    }
+  }
+
+  async function handleYoutubeTrackASave() {
+    const url = youtubeTrackAMode === "channel" ? youtubeTrackAUrl.trim() : "";
+    const keyword = youtubeTrackAMode === "keyword" ? youtubeTrackAKeyword.trim() : "";
+    if (!url && !keyword) return;
+    if (youtubeTrackASaving) return;
+
+    setYoutubeTrackASaving(true);
+    try {
+      await api.sources.add({
+        url: url,
+        type: "youtube",
+        topicId: youtubeTrackATopic || null,
+        discovery_mode: youtubeTrackAMode === "channel" ? "channel_playlist" : "keyword",
+        keyword: keyword,
+        discovery_limit: youtubeTrackALimit,
+      });
+      toast.success("YouTube source saved");
+      setYoutubeTrackAUrl("");
+      setYoutubeTrackAKeyword("");
+      setYoutubeTrackATopic("");
+      setYoutubeTrackALimit(25);
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to save: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setYoutubeTrackASaving(false);
+    }
+  }
+
+  async function handleWebsiteSave() {
+    if (!websiteKeyword.trim() || websiteSaving) return;
+    setWebsiteSaving(true);
+    try {
+      await api.sources.add({
+        url: "",
+        type: "web",
+        topicId: websiteTopic || null,
+        discovery_mode: "web_keyword",
+        keyword: websiteKeyword.trim(),
+        discovery_limit: websiteLimit,
+      });
+      toast.success("Website source saved");
+      setWebsiteKeyword("");
+      setWebsiteTopic("");
+      setWebsiteLimit(5);
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to save: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setWebsiteSaving(false);
+    }
+  }
+
+  function handleLocalFolderFileChange(e: React.ChangeEvent<HTMLInputElement>, mode: "folder" | "files") {
+    const fileList = Array.from(e.currentTarget.files ?? []);
+    if (fileList.length === 0) return;
+    const relPaths = fileList.map(f => (f as any).webkitRelativePath || f.name);
+    setLocalFiles(fileList);
+    setLocalRelPaths(relPaths);
+    if (mode === "folder") {
+      const folderName = relPaths[0]?.split("/")[0] ?? "Folder";
+      setLocalDisplayName(`${folderName} (${fileList.length} file${fileList.length === 1 ? "" : "s"})`);
+    } else {
+      setLocalDisplayName(`${fileList.length} file${fileList.length === 1 ? "" : "s"} selected`);
+    }
+    e.currentTarget.value = "";
+  }
+
+  async function handleLocalFolderSave() {
+    if ((!localFiles.length && !localFolderPath.trim()) || localFolderSaving) return;
+    setLocalFolderSaving(true);
+    try {
+      let urlToSave = localFolderPath.trim();
+      if (localFiles.length > 0) {
+        setLocalFolderUploading(true);
+        const res = await api.sources.upload(localFiles, localRelPaths, "local");
+        urlToSave = res.paths[0] ?? res.paths[0];
+        setLocalFolderUploading(false);
+      }
+      if (!urlToSave) return;
+      await api.sources.add({
+        type: "local",
+        url: urlToSave,
+        topicId: localFolderTopic || null,
+        discovery_mode: "single",
+        discovery_limit: 1,
+      });
+      toast.success("Local folder source added");
+      setLocalFiles([]);
+      setLocalRelPaths([]);
+      setLocalDisplayName("");
+      setLocalFolderTopic("");
+      setLocalFolderPath("");
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to add: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setLocalFolderSaving(false);
+      setLocalFolderUploading(false);
+    }
+  }
+
+  function handlePdfFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.currentTarget.files?.[0];
+    if (!file) return;
+    setSelectedPdfFile(file);
+    setPdfUrl("");
+    e.currentTarget.value = "";
+  }
+
+  async function handlePdfSave() {
+    if ((!pdfUrl.trim() && !selectedPdfFile) || pdfSaving) return;
+    setPdfSaving(true);
+    try {
+      let urlToSave = pdfUrl.trim();
+      if (selectedPdfFile) {
+        setPdfUploading(true);
+        const res = await api.sources.upload([selectedPdfFile], [selectedPdfFile.name], "pdf");
+        urlToSave = res.paths[0];
+        setPdfUploading(false);
+      }
+      await api.sources.add({
+        type: "pdf",
+        url: urlToSave,
+        topicId: pdfTopic || null,
+        discovery_mode: "single",
+        discovery_limit: 1,
+      });
+      toast.success("PDF source added");
+      setPdfUrl("");
+      setPdfTopic("");
+      setSelectedPdfFile(null);
+      refetch();
+    } catch (e) {
+      toast.error(`Failed to add: ${e instanceof Error ? e.message : "Request failed"}`);
+    } finally {
+      setPdfSaving(false);
+      setPdfUploading(false);
+    }
   }
 
   async function handleAddTopic() {
@@ -400,6 +666,16 @@ function SourcesScreen() {
       toast.success(`Topic "${newTopicLabel.trim()}" created`);
       setNewTopicLabel(""); refetchTopics();
     } catch { toast.error("Failed to create topic"); }
+  }
+
+  function toggleYoutubeSelect(videoId: string) {
+    const updated = new Set(youtubeSelected);
+    if (updated.has(videoId)) {
+      updated.delete(videoId);
+    } else {
+      updated.add(videoId);
+    }
+    setYoutubeSelected(updated);
   }
 
   const typeColors: Record<string, string> = { youtube: "text-red-500", pdf: "text-orange-500", local: "text-amber-600", web: "text-slate-500" };
@@ -492,6 +768,11 @@ function SourcesScreen() {
                 <div className="flex-1">
                   <p className="text-sm font-semibold text-slate-800 line-clamp-2 leading-snug">{s.title}</p>
                   <p className="text-xs text-slate-400 mt-1 truncate">{s.url}</p>
+                  {sourceScopeLabel(s.sourceScope) && (
+                    <span className="inline-block mt-1.5 text-[11px] px-2 py-0.5 rounded-full font-medium bg-blue-50 text-blue-600">
+                      {sourceScopeLabel(s.sourceScope)}
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center justify-between border-t border-slate-100 pt-2.5">
                   {topic ? (
@@ -508,7 +789,7 @@ function SourcesScreen() {
       {/* Add Source Modal */}
       {showModal && (
         <div className="fixed inset-0 bg-black/30 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setShowModal(false)}>
-          <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl border border-slate-200" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl border border-slate-200 max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-5">
               <div>
                 <h2 className="text-base font-semibold text-slate-900">Add a Source</h2>
@@ -516,34 +797,374 @@ function SourcesScreen() {
               </div>
               <button onClick={() => setShowModal(false)} className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400"><X className="size-4" /></button>
             </div>
-            <div className="space-y-4">
+
+            {/* Source Type Tabs */}
+            <div className="flex gap-1 bg-slate-100 p-1 rounded-lg mb-5 w-fit">
+              {["YouTube", "Website", "PDF", "Local Folder"].map((label) => (
+                <button
+                  key={label}
+                  onClick={() => {
+                    if (label === "YouTube") { setYoutubeParseMessage(""); setYoutubeParsedConfidence(null); }
+                    else if (label === "Website") { setWebsiteKeyword(""); }
+                    else if (label === "PDF") { setPdfUrl(""); }
+                    else { setLocalFolderPath(""); }
+                  }}
+                  className="px-3 py-1.5 text-xs font-medium rounded transition-all text-slate-500 hover:text-slate-700"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            {/* YouTube Section (Track B + Track A) */}
+            <div className="space-y-4 mb-6">
+              <div className="border-b border-slate-200 pb-4">
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">YouTube: Find & Create Notes</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1.5 block">Natural language query (optional)</label>
+                    <input
+                      value={youtubeParseMessage}
+                      onChange={(e) => setYoutubeParseMessage(e.target.value)}
+                      placeholder="e.g., 'Python tutorials for beginners, max 15 videos'"
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                    />
+                    <button
+                      onClick={handleYoutubeParseIntent}
+                      disabled={youtubeParsePending || !youtubeParseMessage.trim()}
+                      className="mt-2 text-xs px-3 py-1.5 rounded-lg bg-blue-50 text-blue-700 border border-blue-200 hover:bg-blue-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {youtubeParsePending ? "Parsing…" : "Parse with AI"}
+                    </button>
+                    {youtubeParsedConfidence !== null && youtubeParsedConfidence < 0.6 && (
+                      <Badge variant="warning" className="mt-2 inline-block">Low confidence — please confirm</Badge>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Search query</label>
+                      <input
+                        value={youtubeQuery}
+                        onChange={(e) => setYoutubeQuery(e.target.value)}
+                        placeholder="Search term"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Limit (1-50)</label>
+                      <input
+                        type="number"
+                        value={youtubeLimit}
+                        onChange={(e) => setYoutubeLimit(Math.max(1, Math.min(50, parseInt(e.target.value) || 10)))}
+                        min="1"
+                        max="50"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleYoutubeSearch}
+                    variant="secondary"
+                    size="sm"
+                    disabled={youtubeSearching || !youtubeQuery.trim()}
+                    className="w-full justify-center"
+                  >
+                    <Search className="size-3" /> {youtubeSearching ? "Searching…" : "Search"}
+                  </Button>
+                </div>
+
+                {youtubeSearchResults.length > 0 && (
+                  <div className="mt-4 space-y-2 max-h-60 overflow-y-auto border border-slate-200 rounded-lg p-3 bg-slate-50">
+                    <p className="text-xs font-medium text-slate-600">{youtubeSelected.size} selected</p>
+                    {youtubeSearchResults.map((item) => (
+                      <div key={item.video_id} className="flex items-start gap-2 p-2 bg-white rounded border border-slate-100 hover:border-blue-300 transition-colors">
+                        <input
+                          type="checkbox"
+                          checked={youtubeSelected.has(item.video_id)}
+                          onChange={() => toggleYoutubeSelect(item.video_id)}
+                          className="mt-1 rounded"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs font-medium text-slate-800 line-clamp-2">{item.title}</p>
+                          {item.channel && <p className="text-[11px] text-slate-500">{item.channel}</p>}
+                        </div>
+                        {youtubeBatchProcessing.has(item.url) && (
+                          <Badge
+                            variant={youtubeBatchProcessing.get(item.url) === "SUCCESS" ? "success" : youtubeBatchProcessing.get(item.url) === "ALREADY_EXISTS" ? "neutral" : "danger"}
+                            className="shrink-0"
+                          >
+                            {youtubeBatchProcessing.get(item.url) === "PROCESSING" ? "…" : youtubeBatchProcessing.get(item.url)}
+                          </Badge>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {youtubeSelected.size > 0 && (
+                  <Button
+                    onClick={handleCreateNotesFromSelected}
+                    variant="primary"
+                    size="sm"
+                    disabled={youtubeBatchProcessing.size > 0}
+                    className="w-full justify-center mt-3"
+                  >
+                    Create Notes from {youtubeSelected.size} Selected
+                  </Button>
+                )}
+              </div>
+
+              <div className="border-b border-slate-200 pb-4">
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">YouTube: Subscribe & Monitor</h3>
+                <div className="space-y-3">
+                  <div className="flex gap-2 bg-slate-50 p-2 rounded-lg">
+                    {["channel", "keyword"].map((mode) => (
+                      <button
+                        key={mode}
+                        onClick={() => {
+                          setYoutubeTrackAMode(mode as "channel" | "keyword");
+                          setYoutubeTrackAUrl("");
+                          setYoutubeTrackAKeyword("");
+                        }}
+                        className={`flex-1 px-2 py-1.5 text-xs font-medium rounded transition-all ${youtubeTrackAMode === mode ? "bg-white text-slate-800 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                      >
+                        {mode === "channel" ? "Channel/Playlist" : "Keyword"}
+                      </button>
+                    ))}
+                  </div>
+                  {youtubeTrackAMode === "channel" ? (
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Channel or Playlist URL</label>
+                      <input
+                        value={youtubeTrackAUrl}
+                        onChange={(e) => setYoutubeTrackAUrl(e.target.value)}
+                        placeholder="https://youtube.com/@channel or playlist URL"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Keyword</label>
+                      <input
+                        value={youtubeTrackAKeyword}
+                        onChange={(e) => setYoutubeTrackAKeyword(e.target.value)}
+                        placeholder="e.g., Python tutorials"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Limit (1-50)</label>
+                      <input
+                        type="number"
+                        value={youtubeTrackALimit}
+                        onChange={(e) => setYoutubeTrackALimit(Math.max(1, Math.min(50, parseInt(e.target.value) || 25)))}
+                        min="1"
+                        max="50"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                      <select
+                        value={youtubeTrackATopic}
+                        onChange={(e) => setYoutubeTrackATopic(e.target.value)}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                      >
+                        <option value="">Uncategorised</option>
+                        {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleYoutubeTrackASave}
+                    variant="primary"
+                    size="sm"
+                    disabled={youtubeTrackASaving || (!youtubeTrackAUrl && !youtubeTrackAKeyword)}
+                    className="w-full justify-center"
+                  >
+                    {youtubeTrackASaving ? "Saving…" : "Save Source"}
+                  </Button>
+                </div>
+              </div>
+
               <div>
-                <label className="text-xs font-medium text-slate-600 mb-1.5 block">URL or file path</label>
-                <input value={newUrl} onChange={(e) => setNewUrl(e.target.value)} placeholder="https://… or /local/path"
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all" />
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">Website: Subscribe & Monitor</h3>
+                <div className="space-y-3">
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 mb-1.5 block">Keyword</label>
+                    <input
+                      value={websiteKeyword}
+                      onChange={(e) => setWebsiteKeyword(e.target.value)}
+                      placeholder="e.g., React best practices"
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                    />
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Limit (1-10)</label>
+                      <input
+                        type="number"
+                        value={websiteLimit}
+                        onChange={(e) => setWebsiteLimit(Math.max(1, Math.min(10, parseInt(e.target.value) || 5)))}
+                        min="1"
+                        max="10"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                      <select
+                        value={websiteTopic}
+                        onChange={(e) => setWebsiteTopic(e.target.value)}
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                      >
+                        <option value="">Uncategorised</option>
+                        {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                      </select>
+                    </div>
+                  </div>
+                  <Button
+                    onClick={handleWebsiteSave}
+                    variant="primary"
+                    size="sm"
+                    disabled={websiteSaving || !websiteKeyword.trim()}
+                    className="w-full justify-center"
+                  >
+                    {websiteSaving ? "Saving…" : "Save Source"}
+                  </Button>
+                </div>
               </div>
-              <div>
-                <label className="text-xs font-medium text-slate-600 mb-1.5 block">Source type</label>
-                <select value={newType} onChange={(e) => setNewType(e.target.value as Source["type"])}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white">
-                  <option value="web">Website</option>
-                  <option value="youtube">YouTube Video</option>
-                  <option value="pdf">PDF Document</option>
-                  <option value="local">Local Folder</option>
-                </select>
+            </div>
+
+            {/* Local Folder Section */}
+            <div className="border-t border-slate-200 pt-4 mt-2">
+              <h3 className="text-sm font-semibold text-slate-800 mb-3">Local Folder or File</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Select Folder or File(s)</label>
+                  <input
+                    ref={localFolderInputRef}
+                    type="file"
+                    // @ts-ignore
+                    webkitdirectory=""
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={(e) => handleLocalFolderFileChange(e, "folder")}
+                  />
+                  <input
+                    ref={localFileInputRef}
+                    type="file"
+                    multiple
+                    accept=".txt,.md,.pdf,.doc,.docx,.docm"
+                    style={{ display: "none" }}
+                    onChange={(e) => handleLocalFolderFileChange(e, "files")}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => localFolderInputRef.current?.click()}
+                      className="flex-1 justify-center"
+                    >
+                      <FolderClosed className="size-3.5" /> Browse Folder
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => localFileInputRef.current?.click()}
+                      className="flex-1 justify-center"
+                    >
+                      <File className="size-3.5" /> Browse File(s)
+                    </Button>
+                  </div>
+                  {localDisplayName && <p className="text-xs text-slate-600 mt-1.5">Selected: {localDisplayName}</p>}
+                  {!localDisplayName && <p className="text-xs text-slate-400 mt-1">Supports .txt, .md, .pdf, .doc, .docx files</p>}
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                  <select
+                    value={localFolderTopic}
+                    onChange={(e) => setLocalFolderTopic(e.target.value)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                  >
+                    <option value="">Uncategorised</option>
+                    {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                </div>
+                <Button
+                  onClick={handleLocalFolderSave}
+                  variant="primary"
+                  size="sm"
+                  disabled={localFolderSaving || localFolderUploading || (!localFiles.length && !localFolderPath.trim())}
+                  className="w-full justify-center"
+                >
+                  {localFolderUploading ? "Uploading…" : localFolderSaving ? "Saving…" : "Save Source"}
+                </Button>
               </div>
-              <div>
-                <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic (optional)</label>
-                <select value={newTopic} onChange={(e) => setNewTopic(e.target.value)}
-                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white">
-                  <option value="">Uncategorised</option>
-                  {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
-                </select>
+            </div>
+
+            {/* PDF Section */}
+            <div className="border-t border-slate-200 pt-4 mt-2">
+              <h3 className="text-sm font-semibold text-slate-800 mb-3">PDF Document</h3>
+              <div className="space-y-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">PDF URL or local file</label>
+                  <input
+                    value={pdfUrl}
+                    onChange={(e) => setPdfUrl(e.target.value)}
+                    data-testid="pdf-url-input"
+                    placeholder="https://example.com/document.pdf"
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                  />
+                  <p className="text-xs text-slate-400 mt-1">Supports HTTPS URLs</p>
+                </div>
+                <input
+                  ref={pdfFileInputRef}
+                  type="file"
+                  accept=".pdf"
+                  style={{ display: "none" }}
+                  onChange={handlePdfFileChange}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => pdfFileInputRef.current?.click()}
+                  disabled={pdfUploading || pdfSaving}
+                  className="w-full justify-center"
+                >
+                  <File className="size-3.5" /> {pdfUploading ? "Uploading…" : "Browse Local PDF"}
+                </Button>
+                {selectedPdfFile && (
+                  <p className="text-xs text-slate-600">Selected: {selectedPdfFile.name}</p>
+                )}
+                <div>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
+                  <select
+                    value={pdfTopic}
+                    onChange={(e) => setPdfTopic(e.target.value)}
+                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all bg-white"
+                  >
+                    <option value="">Uncategorised</option>
+                    {(topics ?? []).map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                </div>
+                <Button
+                  onClick={handlePdfSave}
+                  data-testid="add-pdf-source-btn"
+                  variant="primary"
+                  size="sm"
+                  disabled={pdfSaving || pdfUploading || (!pdfUrl.trim() && !selectedPdfFile)}
+                  className="w-full justify-center"
+                >
+                  {pdfUploading ? "Uploading…" : pdfSaving ? "Saving…" : "Save Source"}
+                </Button>
               </div>
-              <div className="flex gap-2 pt-1">
-                <Button onClick={() => setShowModal(false)} variant="secondary" className="flex-1 justify-center">Cancel</Button>
-                <Button onClick={handleAddSource} variant="primary" className="flex-1 justify-center" disabled={adding}>{adding ? "Adding…" : "Add Source"}</Button>
-              </div>
+            </div>
+
+            <div className="flex gap-2 pt-4 border-t border-slate-200 mt-4">
+              <Button onClick={() => setShowModal(false)} variant="secondary" className="flex-1 justify-center">Close</Button>
             </div>
           </div>
         </div>
@@ -559,6 +1180,10 @@ function CandidateApprovalScreen() {
   const { data: topics } = useApi(api.topics.list, seedTopics);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  // AC-014, AC-015, AC-016: Helper to check if a candidate has been scored
+  const isScoredCandidate = (c: Candidate): boolean =>
+    c.qualityScore > 0 || c.confidenceScore > 0;
 
   const toggleExpand = (id: string) => setExpanded((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
   const toggleSelect = (id: string) => setSelected((prev) => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n; });
@@ -655,23 +1280,45 @@ function CandidateApprovalScreen() {
                             </div>
 
                             <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5 mt-3">
-                              {[
-                                { label: "Quality", value: c.qualityScore, warn: c.qualityScore < 60 },
-                                { label: "Confidence", value: c.confidenceScore, warn: false },
-                                { label: "Duplicate risk", value: c.duplicateScore, warn: c.duplicateScore > 50 },
-                              ].map(({ label, value, warn }) => (
-                                <div key={label} className="flex items-center gap-1.5">
-                                  <span className="text-xs text-slate-400">{label}</span>
-                                  <div className="flex items-center gap-1">
-                                    <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
-                                      <div className={`h-full rounded-full ${warn ? "bg-amber-400" : "bg-blue-400"}`} style={{ width: `${value}%` }} />
+                              {isScoredCandidate(c) ? (
+                                <>
+                                  {[
+                                    { label: "Quality", value: c.qualityScore, warn: c.qualityScore < 60 },
+                                    { label: "Confidence", value: c.confidenceScore, warn: false },
+                                    { label: "Duplicate risk", value: c.duplicateScore, warn: c.duplicateScore > 50 },
+                                  ].map(({ label, value, warn }) => (
+                                    <div key={label} className="flex items-center gap-1.5">
+                                      <span className="text-xs text-slate-400">{label}</span>
+                                      <div className="flex items-center gap-1">
+                                        <div className="w-16 h-1.5 rounded-full bg-slate-100 overflow-hidden">
+                                          <div className={`h-full rounded-full ${warn ? "bg-amber-400" : "bg-blue-400"}`} style={{ width: `${value}%` }} />
+                                        </div>
+                                        <span className="text-xs font-medium text-slate-600">{value}</span>
+                                      </div>
                                     </div>
-                                    <span className="text-xs font-medium text-slate-600">{value}</span>
+                                  ))}
+                                  <span className="text-xs text-slate-400">~{c.expectedNotes} notes</span>
+                                  <span className="text-xs text-slate-400">~{c.estimatedTokens.toLocaleString()} tokens</span>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-slate-400">Quality</span>
+                                    <span className="text-xs font-medium text-slate-400">—</span>
                                   </div>
-                                </div>
-                              ))}
-                              <span className="text-xs text-slate-400">~{c.expectedNotes} notes</span>
-                              <span className="text-xs text-slate-400">~{c.estimatedTokens.toLocaleString()} tokens</span>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-slate-400">Confidence</span>
+                                    <span className="text-xs font-medium text-slate-400">—</span>
+                                  </div>
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-xs text-slate-400">Duplicate risk</span>
+                                    <span className="text-xs font-medium text-slate-400">—</span>
+                                  </div>
+                                  <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-50 border border-slate-200">
+                                    <span className="text-xs font-medium text-slate-500">Not scored</span>
+                                  </span>
+                                </>
+                              )}
                             </div>
                           </div>
                           <button onClick={() => toggleExpand(c.id)}
@@ -860,16 +1507,16 @@ function KnowledgeReviewScreen() {
   async function handleApprove(id: string) {
     if (noteActing) return;
     setNoteActing("approve");
-    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); refetch(); }
+    try { await api.notes.approve(id); toast.success("Note accepted and added to vault"); setSelectedId(null); }
     catch (e) { toast.error(`Failed to save note: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setNoteActing(null); }
+    finally { setNoteActing(null); refetch(); }
   }
   async function handleReject(id: string) {
     if (noteActing) return;
     setNoteActing("reject");
-    try { await api.notes.reject(id); toast.success("Note rejected"); refetch(); }
+    try { await api.notes.reject(id); toast.success("Note rejected"); }
     catch (e) { toast.error(`Failed to reject note: ${e instanceof Error ? e.message : "Request failed"}`); }
-    finally { setNoteActing(null); }
+    finally { setNoteActing(null); refetch(); }
   }
 
   return (
@@ -898,6 +1545,9 @@ function KnowledgeReviewScreen() {
                       <div className="w-12 h-1 rounded-full bg-slate-100 overflow-hidden"><div className="h-full rounded-full bg-blue-400" style={{ width: `${n.qualityScore}%` }} /></div>
                     </div>
                     <span className="text-xs text-slate-400">Quality {n.qualityScore}</span>
+                    {n.duplicateScore != null && (
+                      <span className="text-xs text-slate-400">· Dup {n.duplicateScore.toFixed(2)}</span>
+                    )}
                   </div>
                 </button>
               ))}
@@ -1010,11 +1660,12 @@ function KnowledgeReviewScreen() {
 // ─── Vault Browser ────────────────────────────────────────────────────────────
 
 function VaultBrowserScreen() {
-  const { data: tree } = useApi(api.vault.tree, seedVaultTree);
+  const { data: tree, refetch: refetchTree } = useApi(api.vault.tree, seedVaultTree);
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [fileData, setFileData] = useState<VaultFile | null>(null);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(["Indian Insurance", "Claude AI", "Backend Dev"]));
   const [search, setSearch] = useState("");
+  const [vaultRefreshing, setVaultRefreshing] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   async function handleSelectFile(path: string) {
@@ -1038,6 +1689,19 @@ function VaultBrowserScreen() {
     if (!search) return true;
     if (node.name.toLowerCase().includes(search.toLowerCase())) return true;
     return node.children?.some(matchesSearch) ?? false;
+  }
+
+  async function handleVaultRefresh() {
+    if (vaultRefreshing) return;
+    setVaultRefreshing(true);
+    try {
+      await refetchTree();
+      toast.success("Vault refreshed");
+    } catch {
+      toast.error("Refresh failed");
+    } finally {
+      setVaultRefreshing(false);
+    }
   }
 
   function renderTree(nodes: VaultNode[], depth = 0) {
@@ -1065,17 +1729,28 @@ function VaultBrowserScreen() {
   }
 
   return (
-    <div className="flex h-full overflow-hidden">
-      {/* Tree */}
-      <div className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col">
-        <div className="p-3 border-b border-slate-100">
-          <h1 className="text-sm font-semibold text-slate-900 mb-2">Vault Browser</h1>
-          <div className="relative">
-            <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your notes…"
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 outline-none focus:border-blue-300 transition-colors" />
+    <div className="flex flex-col h-full overflow-hidden">
+      <div className="px-6 pt-6">
+        <SectionHeader
+          title="Vault Browser"
+          description="Browse and preview your Obsidian vault notes"
+          action={
+            <Button onClick={handleVaultRefresh} variant="secondary" size="sm" disabled={vaultRefreshing}>
+              <RefreshCw className={`size-3.5${vaultRefreshing ? " animate-spin" : ""}`} /> {vaultRefreshing ? "Refreshing…" : "Refresh"}
+            </Button>
+          }
+        />
+      </div>
+      <div className="flex flex-1 overflow-hidden">
+        {/* Tree */}
+        <div className="w-64 shrink-0 border-r border-slate-200 bg-white flex flex-col">
+          <div className="p-3 border-b border-slate-100">
+            <div className="relative">
+              <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search your notes…"
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-700 placeholder:text-slate-400 outline-none focus:border-blue-300 transition-colors" />
+            </div>
           </div>
-        </div>
         <div className="flex-1 overflow-y-auto p-2">
           {tree && renderTree(tree)}
         </div>
@@ -1138,6 +1813,7 @@ function VaultBrowserScreen() {
           <EmptyState icon={<FileText className="size-6" />} title="Select a file" description="Click any note in the tree to preview it" />
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -1177,7 +1853,7 @@ function SettingsSection({ title, description, children, onSave }: { title: stri
 }
 
 function SettingsScreen() {
-  const { data: settings } = useApi(api.settings.get, seedSettings);
+  const { data: settings, loading: settingsLoading } = useApi(api.settings.get, seedSettings);
   const [vault, setVault] = useState(seedSettings.vault);
   const [ai, setAi] = useState(seedSettings.aiProviders);
   const [privacy, setPrivacy] = useState(seedSettings.privacy);
@@ -1187,8 +1863,9 @@ function SettingsScreen() {
   const [team, setTeam] = useState(seedSettings.team);
   const [claudeKey, setClaudeKey] = useState("");
   const [openaiKey, setOpenaiKey] = useState("");
+  const [showClaudeKey, setShowClaudeKey] = useState(false);
+  const [showOpenaiKey, setShowOpenaiKey] = useState(false);
   const hasLoaded = useRef(false);
-  const [picking, setPicking] = useState(false);
 
   useEffect(() => {
     if (settings && !hasLoaded.current) {
@@ -1204,15 +1881,32 @@ function SettingsScreen() {
   }, [settings]);
 
   async function save(section: string, payload: unknown) {
-    try { await api.settings.update(section, payload); toast.success("Settings saved"); }
-    catch (e) { toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`); }
+    try {
+      await api.settings.update(section, payload);
+      toast.success("Settings saved");
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    }
   }
 
   async function saveAiProviders() {
     if (claudeKey && !claudeKey.startsWith("sk-ant-")) { toast.error("Anthropic keys must start with sk-ant-"); return; }
     if (openaiKey && !openaiKey.startsWith("sk-")) { toast.error("OpenAI keys must start with sk-"); return; }
     const payload: AIProvidersWrite = { claudeKey: claudeKey || undefined, openaiKey: openaiKey || undefined, ollamaUrl: ai.ollamaUrl, fallbackOrder: ai.fallbackOrder };
-    await save("ai_providers", payload);
+    try {
+      await api.settings.update("ai_providers", payload);
+      toast.success("Settings saved");
+      // Update key-set flags locally — no full refetch so other sections are not overwritten
+      setAi(prev => ({
+        ...prev,
+        claudeKeySet: !!claudeKey || prev.claudeKeySet,
+        openaiKeySet: !!openaiKey || prev.openaiKeySet,
+      }));
+      setClaudeKey("");
+      setOpenaiKey("");
+    } catch (e) {
+      toast.error(`Save failed: ${e instanceof Error ? e.message : "Request failed"}`);
+    }
   }
 
   const inputCls = "w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 bg-white transition-all placeholder:text-slate-400";
@@ -1225,28 +1919,41 @@ function SettingsScreen() {
       <SettingsSection title="Vault" description="Where Synker writes your generated notes" onSave={() => save("vault", vault)}>
         <div><label className={labelCls}>Vault name</label><input className={inputCls} value={vault.name} onChange={(e) => setVault({ ...vault, name: e.target.value })} /></div>
         <div>
-          <label className={labelCls}>Vault path</label>
-          <div className="flex gap-2">
-            <input className={inputCls} value={vault.path} onChange={(e) => setVault({ ...vault, path: e.target.value })} />
-            <Button variant="secondary" size="md" disabled={picking || !BASE.includes("localhost")} title={!BASE.includes("localhost") ? "Browse only works when running locally — type the path manually" : undefined} onClick={async () => {
-              setPicking(true);
-              try {
-                const { path } = await api.settings.browseDirectory();
-                if (path) setVault({ ...vault, path });
-              } catch {
-                toast.error("Could not open folder picker — type the path manually.");
-              } finally {
-                setPicking(false);
-              }
-            }}><FolderOpen className="size-4" /> {picking ? "Picking…" : "Browse"}</Button>
-          </div>
+          <label className={labelCls}>Obsidian vault path</label>
+          <input
+            className={inputCls}
+            value={vault.path}
+            onChange={(e) => setVault({ ...vault, path: e.target.value })}
+            placeholder="e.g. C:\Users\you\Documents\MyVault  or  /Users/you/Documents/MyVault"
+          />
+          <p className="text-xs text-slate-500 mt-1.5">
+            Type the absolute path to your Obsidian vault folder. Approved notes will be written here as <code>.md</code> files under a <code>Synker/</code> subfolder.
+            {" "}On Windows use backslashes (<code>C:\Users\…</code>); on Mac/Linux use forward slashes (<code>/Users/…</code>).
+            {" "}If the backend runs on a remote server (Railway), notes are stored in the cloud vault browser above; to sync them to your local Obsidian install and run the <strong>Local Sync Bridge</strong> on your machine.
+          </p>
         </div>
       </SettingsSection>
 
       <SettingsSection title="AI Providers" description="API keys and fallback order for note generation" onSave={saveAiProviders}>
         <div className="grid grid-cols-2 gap-4">
-          <div><label className={labelCls}>Anthropic (Claude)</label><input type="password" className={inputCls} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} /></div>
-          <div><label className={labelCls}>OpenAI</label><input type="password" className={inputCls} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} /></div>
+          <div>
+            <label className={labelCls}>Anthropic (Claude)</label>
+            <div className="relative">
+              <input type={showClaudeKey ? "text" : "password"} className={inputCls + " pr-10"} value={claudeKey} onChange={(e) => setClaudeKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.claudeKeySet ? "Key saved — enter new key to update" : "sk-ant-…"} />
+              <button type="button" onClick={() => setShowClaudeKey(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" tabIndex={-1}>
+                {showClaudeKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className={labelCls}>OpenAI</label>
+            <div className="relative">
+              <input type={showOpenaiKey ? "text" : "password"} className={inputCls + " pr-10"} value={openaiKey} onChange={(e) => setOpenaiKey(e.target.value)} placeholder={settingsLoading && !hasLoaded.current ? "Checking…" : ai.openaiKeySet ? "Key saved — enter new key to update" : "sk-…"} />
+              <button type="button" onClick={() => setShowOpenaiKey(v => !v)} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 transition-colors" tabIndex={-1}>
+                {showOpenaiKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            </div>
+          </div>
         </div>
         <div>
           <label className={labelCls}>Fallback order</label>
@@ -1386,6 +2093,23 @@ export default function App() {
   const [active, setActive] = useState<Screen>("dashboard");
   const [demo, setDemo] = useState(false);
 
+  // AC-011: Read URL on mount and set active screen
+  useEffect(() => {
+    const path = window.location.pathname;
+    const pathToScreen: Record<string, Screen> = {
+      "/approval": "candidates",
+      "/candidates": "candidates",
+      "/sources": "sources",
+      "/jobs": "jobs",
+      "/knowledge": "review",
+      "/vault": "vault",
+      "/settings": "settings",
+      "/dashboard": "dashboard",
+    };
+    const mapped = pathToScreen[path];
+    if (mapped) setActive(mapped);
+  }, []);
+
   useEffect(() => {
     const t = setInterval(() => setDemo(isDemoMode()), 2000);
     return () => clearInterval(t);
@@ -1427,12 +2151,29 @@ export default function App() {
         {/* Nav */}
         <nav className="flex-1 p-3 space-y-0.5 overflow-y-auto">
           {navItems.map((item) => (
-            <button key={item.id} onClick={() => setActive(item.id)}
+            <button
+              key={item.id}
+              onClick={() => {
+                setActive(item.id);
+                // AC-013: Update URL when navigating via sidebar
+                const pathMap: Record<Screen, string> = {
+                  dashboard: "/dashboard",
+                  sources: "/sources",
+                  candidates: "/approval",
+                  jobs: "/jobs",
+                  review: "/knowledge",
+                  vault: "/vault",
+                  settings: "/settings",
+                };
+                const path = pathMap[item.id] || "/dashboard";
+                window.history.pushState({}, "", path);
+              }}
               className={`flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm transition-all ${
                 active === item.id
                   ? "bg-blue-600 text-white shadow-sm"
                   : "text-slate-400 hover:text-white hover:bg-slate-700"
-              }`}>
+              }`}
+            >
               <span className="shrink-0">{item.icon}</span>
               <span className="font-medium">{item.label}</span>
             </button>
@@ -1469,7 +2210,13 @@ export default function App() {
 
       {/* Main */}
       <main className={`flex-1 min-w-0 ${splitScreen ? "flex flex-col overflow-hidden" : "overflow-y-auto"}`}>
-        {active === "dashboard"  && <DashboardScreen />}
+        {demo && (
+          <div className="bg-amber-50 border-b border-amber-200 px-4 py-2 flex items-center gap-2 text-sm text-amber-800 shrink-0">
+            <WifiOff className="size-4 shrink-0" />
+            Backend unavailable — showing cached preview. Changes disabled.
+          </div>
+        )}
+        {active === "dashboard"  && <DashboardScreen onNavigateToSources={() => setActive("sources")} />}
         {active === "sources"    && <SourcesScreen />}
         {active === "candidates" && <CandidateApprovalScreen />}
         {active === "jobs"       && <ProcessingJobsScreen />}

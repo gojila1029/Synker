@@ -10,7 +10,6 @@ Guarantees:
 """
 import pytest
 
-
 GET_ROUTES = [
     "/api/dashboard/stats",
     "/api/dashboard/activity",
@@ -57,6 +56,34 @@ async def test_post_source_returns_200(authed_client):
     assert response.status_code == 200
 
 
+async def test_post_source_defaults_to_direct_resource_scope(authed_client):
+    response = await authed_client.post(
+        "/api/sources",
+        json={"url": "https://example.com", "type": "web", "title": "Test"},
+    )
+    assert response.json()["sourceScope"] == "direct_resource"
+
+
+async def test_post_source_classifies_youtube_homepage_as_discovery_provider(authed_client):
+    """The Add Source UI has no source_scope field — the server must infer
+    it, not blindly trust the client's "direct_resource" schema default,
+    which is wrong for a bare platform homepage (Stage 6 verification-loop
+    ROOT CAUSE #2)."""
+    response = await authed_client.post(
+        "/api/sources",
+        json={"url": "https://www.youtube.com/", "type": "youtube", "title": ""},
+    )
+    assert response.json()["sourceScope"] == "discovery_provider"
+
+
+async def test_post_source_classifies_youtube_video_url_as_direct_resource(authed_client):
+    response = await authed_client.post(
+        "/api/sources",
+        json={"url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ", "type": "youtube", "title": ""},
+    )
+    assert response.json()["sourceScope"] == "direct_resource"
+
+
 async def test_delete_source_returns_204(authed_client):
     response = await authed_client.delete("/api/sources/mock-id")
     assert response.status_code == 204
@@ -71,6 +98,17 @@ async def test_post_candidates_approve_returns_200(authed_client):
 
 async def test_post_candidates_reject_returns_200(authed_client):
     response = await authed_client.post("/api/candidates/reject", json={"ids": ["mock-id"]})
+    assert response.status_code == 200
+
+
+async def test_post_candidates_approve_with_source_returns_200(authed_client):
+    """Test that /api/candidates/approve returns 200 with source_id.
+
+    This test covers AC-003:
+    - The endpoint still returns 200 after the source_id INSERT change
+    - No regressions in the approval flow
+    """
+    response = await authed_client.post("/api/candidates/approve", json={"ids": ["mock-id"]})
     assert response.status_code == 200
 
 
@@ -100,11 +138,56 @@ async def test_patch_settings_section_returns_200(authed_client):
     assert response.status_code == 200
 
 
+async def test_browse_directory_is_deprecated_not_a_silent_empty_path(authed_client):
+    """Regression (Stage 5 item 4): the old server-side tkinter dialog can
+    never open on Railway (no display). It must not silently pretend to have
+    tried and failed by returning {"path": ""} — it must say clearly that
+    folder picking moved to the Local Sync Bridge."""
+    response = await authed_client.get("/api/settings/browse-directory")
+    assert response.status_code == 410
+    assert "Local Sync Bridge" in response.json()["detail"]
+
+
+# ── Vault (Local Sync Bridge) ────────────────────────────────────────────────
+
+async def test_vault_pending_sync_returns_200(authed_client):
+    response = await authed_client.get("/api/vault/pending-sync")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+async def test_vault_sync_result_logs_and_returns_200(authed_client):
+    response = await authed_client.post(
+        "/api/vault/sync-result",
+        json={"path": "Synker/note.md", "status": "written", "detail": "ok"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"path": "Synker/note.md", "status": "written", "logged": True}
+
+
+async def test_vault_sync_result_rejects_unknown_status(authed_client):
+    response = await authed_client.post(
+        "/api/vault/sync-result",
+        json={"path": "Synker/note.md", "status": "bogus"},
+    )
+    assert response.status_code == 422
+
+
 # ── Scheduler ─────────────────────────────────────────────────────────────────
 
-async def test_post_scheduler_trigger_returns_200(authed_client):
+async def test_post_scheduler_trigger_returns_400_when_no_sources(authed_client):
+    """Guard: trigger must return 400 with a clear message when user has no sources."""
     response = await authed_client.post("/api/scheduler/trigger")
+    assert response.status_code == 400
+    assert "No sources" in response.json()["detail"]
+
+
+async def test_post_scheduler_trigger_returns_200_when_source_exists(authed_client_with_source):
+    """Trigger returns 200 and a jobId when the user has at least one source."""
+    response = await authed_client_with_source.post("/api/scheduler/trigger")
     assert response.status_code == 200
+    assert response.json()["triggered"] is True
+    assert response.json()["jobId"] is not None
 
 
 # ── Auth guard ────────────────────────────────────────────────────────────────

@@ -5,7 +5,10 @@ Falls back to a basic title extraction when trafilatura cannot parse the page.
 """
 from __future__ import annotations
 
+import ipaddress
 import re
+import socket
+from urllib.parse import urlparse
 
 import httpx
 
@@ -40,11 +43,45 @@ def _html_title(html: str) -> str | None:
     return None
 
 
+def _is_safe_url(url: str) -> bool:
+    """Check if URL is safe from SSRF attacks.
+
+    Validates:
+    - Scheme is http or https only (SEC-007)
+    - Resolved IP is not private, loopback, link-local, or reserved (SEC-008)
+
+    Returns False if validation fails, True if safe.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return False
+
+    hostname = parsed.hostname or ""
+    if not hostname:
+        return False
+
+    try:
+        # Resolve hostname to IP address(es)
+        addrs = socket.getaddrinfo(hostname, None)
+        for addr in addrs:
+            ip = ipaddress.ip_address(addr[4][0])
+            if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved):
+                return False
+    except (socket.gaierror, ValueError):
+        # Cannot resolve or invalid IP = allow (fail open for DNS issues)
+        return True
+
+    return True
+
+
 class WebAdapter(SourceAdapter):
     """Extract clean article text from a web page URL."""
 
     async def extract(self, url: str) -> ExtractedContent:
         """Fetch and extract content from a web page."""
+        if not _is_safe_url(url):
+            raise ExtractionError("URL rejected: private or reserved IP address")
+
         try:
             async with httpx.AsyncClient(
                 timeout=30.0,

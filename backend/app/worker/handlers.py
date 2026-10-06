@@ -6,20 +6,24 @@ fabricate notes, candidates, or citations — if there is nothing real to do, th
 say so honestly. Handlers should handle all exceptions gracefully and return a
 meaningful error message rather than crashing.
 """
+import datetime
 import json
+import logging
 import os
 import re
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-import asyncpg.exceptions
-
 from app.adapters import extract as adapter_extract
 from app.adapters.base import ExtractedContent, ExtractionError
 from app.adapters.registry import get_adapter
+from app.adapters.youtube_discovery import discover_channel_videos
 from app.ai import generate_note
+
+_log = logging.getLogger(__name__)
 
 # pct -> None. Persists progress + heartbeat for the running job.
 ProgressFn = Callable[[int], Awaitable[None]]
@@ -30,6 +34,119 @@ Handler = Callable[[dict[str, Any], ProgressFn, Any], Awaitable[str]]
 # Seconds between discovery progress steps. Kept short; tests set it to 0.
 STEP_DELAY_SECONDS = 1.2
 
+# English stopwords to exclude from similarity keywords
+STOPWORDS = {
+    "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "to", "of", "in", "on", "at",
+    "for", "with", "by", "from", "and", "or", "but", "not", "this", "that",
+    "these", "those", "it", "its", "which", "who", "what", "when", "where",
+    "why", "how",
+}
+
+
+class NoEvidenceError(Exception):
+    """Raised when a handler refuses to act because there is no valid
+    Evidence to act on (CLAUDE.md: 'No valid Evidence -> no Knowledge Note').
+    runner._run_job maps this to jobs.status='failed' with the machine
+    -readable jobs.error_code taken from .code, instead of letting it fall
+    through as a merely failure-looking string that would record the job as
+    'completed'. The message must never contain source content or URLs —
+    it becomes jobs.error, which is not access-controlled the same way
+    source_extractions is."""
+
+    code = "NO_EVIDENCE"
+
+
+def _extract_keywords(text: str, title: str = "") -> set[str]:
+    """Extract keywords from title and first 5 sentences of text.
+
+    Returns a set of lowercase tokens with length >= 3, excluding common
+    English stopwords. Algorithm: Jaccard similarity uses keywords to compute
+    overlap between candidate and vault notes.
+    """
+    # Combine title + first 5 sentences
+    combined = title
+    if text:
+        sentences = re.split(r'[.!?]+', text.strip())
+        first_five = sentences[:5]
+        combined = combined + " " + " ".join(first_five)
+
+    # Tokenize: split on whitespace and punctuation
+    tokens = re.findall(r'\b\w+\b', combined.lower())
+
+    # Filter: keep only tokens >= 3 chars and not in stopwords
+    keywords = {t for t in tokens if len(t) >= 3 and t not in STOPWORDS}
+    return keywords
+
+
+async def _compute_candidate_similarity(
+    pool: Any, user_id: Any, candidate_text: str, candidate_title: str
+) -> float:
+    """Compute Jaccard similarity between candidate and vault notes.
+
+    Returns max similarity score in [0.0, 1.0]:
+    - 0.0: no meaningful overlap (unique candidate)
+    - 0.5: moderate overlap (candidate partially covers existing knowledge)
+    - 1.0: near-perfect or exact duplicate
+
+    Uses keyword-based Jaccard: |A ∩ B| / |A ∪ B|.
+    Queries vault_files first; falls back to notes table if empty.
+    Completes in < 5 seconds wall-clock time per AC-005.
+    Returns 0.0 on error or empty vault per AC-007 and AC-008.
+    """
+    if not candidate_text or not candidate_text.strip():
+        return 0.0
+
+    try:
+        t0 = time.monotonic()
+
+        # Fetch vault notes (primary source)
+        async with pool.acquire() as conn:
+            vault_rows = await conn.fetch(
+                "SELECT content FROM vault_files WHERE user_id=$1 LIMIT 200",
+                user_id,
+            )
+
+        # Fallback to notes table if vault is empty
+        if not vault_rows:
+            async with pool.acquire() as conn:
+                vault_rows = await conn.fetch(
+                    "SELECT content FROM notes WHERE user_id=$1 AND status='approved' LIMIT 200",
+                    user_id,
+                )
+
+        # Empty vault: return 0.0 per AC-004
+        if not vault_rows:
+            return 0.0
+
+        # Extract candidate keywords once
+        cand_kw = _extract_keywords(candidate_text, candidate_title)
+        if not cand_kw:
+            return 0.0
+
+        # Compute max Jaccard similarity across all vault notes
+        max_sim = 0.0
+        for row in vault_rows:
+            # Check 5-second timeout per AC-005
+            if time.monotonic() - t0 > 4.5:
+                _log.warning("Similarity computation timeout, returning partial result")
+                break
+
+            vault_kw = _extract_keywords(row["content"] or "")
+            union = len(cand_kw | vault_kw)
+            if union == 0:
+                continue
+            intersection = len(cand_kw & vault_kw)
+            sim = intersection / union
+            if sim > max_sim:
+                max_sim = sim
+
+        return min(1.0, max_sim)
+    except Exception as exc:
+        _log.warning("Similarity computation failed: %s", exc)
+        return 0.0
+
 
 def _safe_filename(title: str) -> str:
     """Convert a note title to a safe filename by replacing special characters."""
@@ -37,15 +154,465 @@ def _safe_filename(title: str) -> str:
     return safe[:100]
 
 
+def _parse_date(value: str | None) -> datetime.datetime | None:
+    """Parse an ISO-8601 date string from trafilatura into a datetime.
+
+    asyncpg requires a datetime object for TIMESTAMP columns; trafilatura
+    returns plain strings like '2024-01-15' or '2024-01-15T12:00:00'.
+    Returns None on any parse failure so callers never crash.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _candidate_fields(
+    extracted: ExtractedContent | None, fallback_title: str, domain: str
+) -> dict[str, Any]:
+    """Build a candidate row's variable fields from an extraction result,
+    honestly reflecting failure (Stage 6 ROOT CAUSE #1) rather than a fake
+    healthy-looking score. Shared between the direct_resource path and each
+    video discovered from a discovery_provider source."""
+    if extracted and (extracted.error or not extracted.text):
+        # Honest failure: keep the real error, do not claim a normal
+        # quality/confidence score, and fall back to the domain (not the
+        # word "Unknown") when there's no title — the URL/domain is real
+        # lineage, "Unknown" is not.
+        return {
+            "title": fallback_title or domain or "Untitled source",
+            "summary": extracted.error if extracted.error else "Extraction pending",
+            "published_at": None,
+            "word_count": 0,
+            "recommendation": "review",
+            "quality_score": 0.0,
+            "confidence_score": 0.0,
+        }
+    return {
+        "title": extracted.title if extracted else fallback_title,
+        "summary": extracted.text[:500] if extracted and extracted.text else "",
+        "published_at": _parse_date(extracted.published_at) if extracted else None,
+        "word_count": extracted.word_count if extracted else 0,
+        "recommendation": "process",
+        "quality_score": 0.75,
+        "confidence_score": 0.70,
+    }
+
+
+async def _create_candidate_with_evidence(
+    pool: Any,
+    user_id: Any,
+    source_id: Any,
+    source_url: str,
+    domain: str,
+    fields: dict[str, Any],
+    extracted: ExtractedContent | None,
+) -> bool:
+    """Insert a candidate row, deduped against ANY existing candidate for
+    this source_url regardless of status — an approved or rejected
+    candidate must never be silently recreated just because it is no
+    longer 'pending'. Also persists the extraction as Evidence
+    (source_extractions) when it actually succeeded, since no job type
+    anywhere in this codebase ever enqueues a separate "Extraction" job to
+    do that later. Returns True if a new candidate was created."""
+    async with pool.acquire() as conn:
+        existing = await conn.fetchval(
+            "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+            user_id,
+            source_url,
+        )
+        if existing:
+            return False
+
+        # Compute real Jaccard similarity against vault notes
+        dup_score = await _compute_candidate_similarity(
+            pool,
+            user_id,
+            extracted.text if extracted else fields["summary"],
+            fields["title"],
+        )
+
+        await conn.execute(
+            """INSERT INTO candidates
+               (user_id, source_id, title, source_info, domain, published_at,
+                recommendation, quality_score, confidence_score,
+                duplicate_score, expected_notes, estimated_tokens,
+                summary, extracted_topics, status)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                       $12, $13, $14, $15)""",
+            user_id,
+            source_id,
+            fields["title"],
+            source_url,
+            domain,
+            fields["published_at"],
+            fields["recommendation"],
+            fields["quality_score"],
+            fields["confidence_score"],
+            dup_score,
+            1,
+            max(1000, fields["word_count"] * 2),
+            fields["summary"],
+            [],
+            "pending",
+        )
+
+        if extracted and extracted.text and not extracted.error:
+            timestamps_json = (
+                json.dumps(extracted.timestamps) if extracted.timestamps else None
+            )
+            await conn.execute(
+                """INSERT INTO source_extractions
+                   (source_id, user_id, source_url, text, title, author,
+                    published_at, timestamps, word_count)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                source_id,
+                user_id,
+                source_url,
+                extracted.text,
+                extracted.title,
+                extracted.author,
+                _parse_date(extracted.published_at),
+                timestamps_json,
+                extracted.word_count,
+            )
+    return True
+
+
+async def _discover_videos_for_source(
+    pool: Any, user_id: Any, source: dict[str, Any]
+) -> int | None:
+    """Real Discovery engine for a discovery_provider source (a YouTube
+    channel/playlist URL with no resolvable video id — see
+    app/adapters/classify.py). Enumerates its videos via yt-dlp and creates
+    one candidate + Evidence pair per new video. Returns the count created,
+    or None when discovery was skipped (unsupported/failed) -- the caller
+    must not lump that in with "0 videos found" since a skipped source is
+    already marked 'failed' and must not be flipped back to 'done'."""
+    discovery = await discover_channel_videos(source["url"])
+
+    if discovery.error or discovery.unsupported_reason:
+        reason = discovery.error or discovery.unsupported_reason
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO processing_log
+                   (user_id, entity_type, entity_id, action, details)
+                   VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                user_id,
+                source["id"],
+                json.dumps({"reason": reason}),
+            )
+            await conn.execute(
+                "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                source["id"],
+                user_id,
+            )
+        return None
+
+    discovered_count = 0
+    for video in discovery.videos:
+        video_extracted: ExtractedContent | None = None
+        try:
+            video_extracted = await adapter_extract("youtube", video.url)
+        except Exception as exc:
+            video_extracted = ExtractedContent(text="", title="", error=str(exc))
+
+        video_domain = urlparse(video.url).netloc if video.url else ""
+        fields = _candidate_fields(video_extracted, video.title, video_domain)
+
+        created = await _create_candidate_with_evidence(
+            pool, user_id, source["id"], video.url, video_domain, fields, video_extracted
+        )
+        if created:
+            discovered_count += 1
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_log
+               (user_id, entity_type, entity_id, action, details)
+               VALUES ($1, 'source', $2, 'discovery_completed', $3::jsonb)""",
+            user_id,
+            source["id"],
+            json.dumps({"found": len(discovery.videos), "created": discovered_count}),
+        )
+        await conn.execute(
+            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+            source["id"],
+            user_id,
+        )
+    return discovered_count
+
+
+async def _discover_youtube_keyword(
+    pool: Any, user_id: Any, source: dict[str, Any]
+) -> int | None:
+    """Discover YouTube videos via keyword search."""
+    from app.adapters.youtube_search import search_youtube
+
+    keyword = source.get("keyword")
+    discovery_limit = source.get("discovery_limit", 25)
+
+    if not keyword:
+        return None
+
+    result = await search_youtube(keyword, limit=discovery_limit)
+    if result.error or not result.results:
+        reason = result.error or "No results found"
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO processing_log
+                   (user_id, entity_type, entity_id, action, details)
+                   VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                user_id,
+                source["id"],
+                json.dumps({"reason": reason}),
+            )
+        return 0
+
+    discovered_count = 0
+    for search_result in result.results:
+        video_url = search_result.url
+        video_extracted: ExtractedContent | None = None
+        try:
+            video_extracted = await adapter_extract("youtube", video_url)
+        except Exception as exc:
+            video_extracted = ExtractedContent(text="", title="", error=str(exc))
+
+        video_domain = urlparse(video_url).netloc if video_url else ""
+        fields = _candidate_fields(video_extracted, search_result.title, video_domain)
+
+        # Create candidate with status=pending (not auto-approved)
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+                user_id,
+                video_url,
+            )
+            if existing:
+                continue
+
+            # Compute real Jaccard similarity against vault notes
+            dup_score = await _compute_candidate_similarity(
+                pool,
+                user_id,
+                video_extracted.text if video_extracted else fields["summary"],
+                fields["title"],
+            )
+
+            await conn.execute(
+                """INSERT INTO candidates
+                   (user_id, source_id, title, source_info, domain, published_at,
+                    recommendation, quality_score, confidence_score,
+                    duplicate_score, expected_notes, estimated_tokens,
+                    summary, extracted_topics, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                           $12, $13, $14, $15)""",
+                user_id,
+                source["id"],
+                fields["title"],
+                video_url,
+                video_domain,
+                fields["published_at"],
+                fields["recommendation"],
+                fields["quality_score"],
+                fields["confidence_score"],
+                dup_score,
+                1,
+                max(1000, fields["word_count"] * 2),
+                fields["summary"],
+                [],
+                "pending",
+            )
+
+            if video_extracted and video_extracted.text and not video_extracted.error:
+                timestamps_json = (
+                    json.dumps(video_extracted.timestamps)
+                    if video_extracted.timestamps
+                    else None
+                )
+                await conn.execute(
+                    """INSERT INTO source_extractions
+                       (source_id, user_id, source_url, text, title, author,
+                        published_at, timestamps, word_count)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    source["id"],
+                    user_id,
+                    video_url,
+                    video_extracted.text,
+                    video_extracted.title,
+                    video_extracted.author,
+                    _parse_date(video_extracted.published_at),
+                    timestamps_json,
+                    video_extracted.word_count,
+                )
+
+        discovered_count += 1
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_log
+               (user_id, entity_type, entity_id, action, details)
+               VALUES ($1, 'source', $2, 'discovery_completed', $3::jsonb)""",
+            user_id,
+            source["id"],
+            json.dumps({"found": len(result.results), "created": discovered_count}),
+        )
+        await conn.execute(
+            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+            source["id"],
+            user_id,
+        )
+    return discovered_count
+
+
+async def _discover_website_keyword(
+    pool: Any, user_id: Any, source: dict[str, Any]
+) -> int | None:
+    """Discover websites via keyword search."""
+    from app.adapters.web_search import search_websites
+
+    keyword = source.get("keyword")
+    discovery_limit = source.get("discovery_limit", 25)
+
+    if not keyword:
+        return None
+
+    result = await search_websites(keyword, limit=discovery_limit)
+    if result.error or not result.results:
+        reason = result.error or "No results found"
+        async with pool.acquire() as conn:
+            await conn.execute(
+                """INSERT INTO processing_log
+                   (user_id, entity_type, entity_id, action, details)
+                   VALUES ($1, 'source', $2, 'discovery_skipped', $3::jsonb)""",
+                user_id,
+                source["id"],
+                json.dumps({"reason": reason}),
+            )
+        return 0
+
+    discovered_count = 0
+    for search_result in result.results:
+        website_url = search_result.url
+        website_extracted: ExtractedContent | None = None
+        try:
+            website_extracted = await adapter_extract("web", website_url)
+        except Exception as exc:
+            website_extracted = ExtractedContent(text="", title="", error=str(exc))
+
+        website_domain = urlparse(website_url).netloc if website_url else ""
+        fields = _candidate_fields(website_extracted, search_result.title, website_domain)
+
+        # Normalize URL for dedup
+        from app.adapters.web_search import _normalize_url
+
+        normalized_url = _normalize_url(website_url)
+
+        # Create candidate with status=pending (not auto-approved)
+        async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+                user_id,
+                normalized_url,
+            )
+            if existing:
+                continue
+
+            # Compute real Jaccard similarity against vault notes
+            dup_score = await _compute_candidate_similarity(
+                pool,
+                user_id,
+                website_extracted.text if website_extracted else fields["summary"],
+                fields["title"],
+            )
+
+            await conn.execute(
+                """INSERT INTO candidates
+                   (user_id, source_id, title, source_info, domain, published_at,
+                    recommendation, quality_score, confidence_score,
+                    duplicate_score, expected_notes, estimated_tokens,
+                    summary, extracted_topics, status)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
+                           $12, $13, $14, $15)""",
+                user_id,
+                source["id"],
+                fields["title"],
+                normalized_url,
+                website_domain,
+                fields["published_at"],
+                fields["recommendation"],
+                fields["quality_score"],
+                fields["confidence_score"],
+                dup_score,
+                1,
+                max(1000, fields["word_count"] * 2),
+                fields["summary"],
+                [],
+                "pending",
+            )
+
+            if website_extracted and website_extracted.text and not website_extracted.error:
+                timestamps_json = (
+                    json.dumps(website_extracted.timestamps)
+                    if website_extracted.timestamps
+                    else None
+                )
+                await conn.execute(
+                    """INSERT INTO source_extractions
+                       (source_id, user_id, source_url, text, title, author,
+                        published_at, timestamps, word_count)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                    source["id"],
+                    user_id,
+                    normalized_url,
+                    website_extracted.text,
+                    website_extracted.title,
+                    website_extracted.author,
+                    _parse_date(website_extracted.published_at),
+                    timestamps_json,
+                    website_extracted.word_count,
+                )
+
+        discovered_count += 1
+
+    async with pool.acquire() as conn:
+        await conn.execute(
+            """INSERT INTO processing_log
+               (user_id, entity_type, entity_id, action, details)
+               VALUES ($1, 'source', $2, 'discovery_completed', $3::jsonb)""",
+            user_id,
+            source["id"],
+            json.dumps({"found": len(result.results), "created": discovered_count}),
+        )
+        await conn.execute(
+            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+            source["id"],
+            user_id,
+        )
+    return discovered_count
+
+
 async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any) -> str:
-    """Discovery: scan queued sources, extract metadata, create candidate records."""
+    """Discovery: scan queued sources, extract metadata, create candidate records.
+
+    Routes sources based on discovery_mode:
+    - 'keyword' → YouTube keyword search
+    - 'web_keyword' → Website keyword search
+    - 'channel_playlist' → Channel/playlist enumeration
+    - 'single' or None → Direct extraction
+    """
     user_id = job["user_id"]
     created = 0
+    skipped_discovery_ids: list[Any] = []
 
     try:
         async with pool.acquire() as conn:
             sources = await conn.fetch(
-                "SELECT id, type, title, url FROM sources WHERE user_id=$1",
+                """SELECT id, type, title, url, source_scope, discovery_mode,
+                          keyword, discovery_limit
+                   FROM sources WHERE user_id=$1 AND status='queued'""",
                 user_id,
             )
 
@@ -58,67 +625,54 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             try:
                 await progress(10 + 70 * (i + 1) // total)
 
+                discovery_mode = source.get("discovery_mode")
                 source_type = source["type"] or "web"
                 source_url = source["url"]
 
+                # Route by discovery_mode
+                if discovery_mode == "keyword":
+                    discovered = await _discover_youtube_keyword(pool, user_id, source)
+                    if discovered is None:
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        created += discovered
+                    continue
+
+                if discovery_mode == "web_keyword":
+                    discovered = await _discover_website_keyword(pool, user_id, source)
+                    if discovered is None:
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        created += discovered
+                    continue
+
+                if (
+                    source["source_scope"] == "discovery_provider"
+                    or discovery_mode == "channel_playlist"
+                ):
+                    discovered = await _discover_videos_for_source(pool, user_id, source)
+                    if discovered is None:
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        created += discovered
+                    continue
+
+                # Direct extraction path (single or None)
                 extracted = None
                 try:
                     extracted = await adapter_extract(source_type, source_url)
-                except Exception:
-                    extracted = ExtractedContent(
-                        text="",
-                        title=source["title"] or "Unknown",
-                        error="Extraction pending",
-                    )
-
-                if extracted and (extracted.error or not extracted.text):
-                    title = source["title"] or "Unknown"
-                    summary = "Extraction pending"
-                    published_at = None
-                    word_count = 0
-                else:
-                    title = extracted.title if extracted else source["title"]
-                    summary = extracted.text[:500] if extracted and extracted.text else ""
-                    published_at = extracted.published_at if extracted else None
-                    word_count = extracted.word_count if extracted else 0
+                except Exception as exc:
+                    extracted = ExtractedContent(text="", title="", error=str(exc))
 
                 domain = urlparse(source_url).netloc if source_url else ""
+                fields = _candidate_fields(extracted, source["title"], domain)
+
+                if await _create_candidate_with_evidence(
+                    pool, user_id, source["id"], source_url, domain, fields, extracted
+                ):
+                    created += 1
 
                 async with pool.acquire() as conn:
-                    existing = await conn.fetchval(
-                        """SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2
-                           AND status='pending' LIMIT 1""",
-                        user_id,
-                        source_url,
-                    )
-
-                    if not existing:
-                        await conn.execute(
-                            """INSERT INTO candidates
-                               (user_id, source_id, title, source_info, domain, published_at,
-                                recommendation, quality_score, confidence_score,
-                                duplicate_score, expected_notes, estimated_tokens,
-                                summary, extracted_topics, status)
-                               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
-                                       $12, $13, $14, $15)""",
-                            user_id,
-                            source["id"],
-                            title,
-                            source_url,
-                            domain,
-                            published_at,
-                            "process",
-                            0.75,
-                            0.70,
-                            0.05,
-                            1,
-                            max(1000, word_count * 2),
-                            summary,
-                            [],
-                            "pending",
-                        )
-                        created += 1
-
                     await conn.execute(
                         "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
                         source["id"],
@@ -126,6 +680,15 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                     )
             except Exception:
                 pass
+
+        done_ids = [s["id"] for s in sources if s["id"] not in skipped_discovery_ids]
+        if done_ids:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE sources SET status='done' WHERE id=ANY($1) AND user_id=$2",
+                    done_ids,
+                    user_id,
+                )
 
         await progress(100)
         return f"{created} candidate(s) created from {total} source(s)"
@@ -210,7 +773,8 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
     try:
         async with pool.acquire() as conn:
             candidate = await conn.fetchrow(
-                "SELECT title, source_info, summary FROM candidates WHERE id=$1 AND user_id=$2",
+                """SELECT title, source_info, summary, source_id, topic_id
+                   FROM candidates WHERE id=$1 AND user_id=$2""",
                 candidate_id,
                 user_id,
             )
@@ -221,6 +785,10 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
 
         await progress(20)
 
+        source_id = candidate["source_id"]
+        topic_id = candidate["topic_id"]
+        source_url = candidate["source_info"]
+
         async with pool.acquire() as conn:
             ai_row = await conn.fetchrow(
                 "SELECT ai_providers FROM user_settings WHERE user_id=$1", user_id
@@ -228,36 +796,53 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
             ai_settings = ai_row["ai_providers"] if ai_row else {}
 
             existing_rows = await conn.fetch(
-                "SELECT title FROM notes WHERE user_id=$1 AND status='approved' ORDER BY generated_at DESC LIMIT 100",
+                "SELECT title FROM notes WHERE user_id=$1 AND status='approved' "
+                "ORDER BY generated_at DESC LIMIT 100",
                 user_id,
             )
+
+            # Prefer the candidate's real source_id FK over re-deriving type from
+            # a URL string match, which breaks silently if a source's URL changed
+            # or two sources share a URL.
+            if source_id:
+                source_row = await conn.fetchrow(
+                    "SELECT type FROM sources WHERE id=$1 AND user_id=$2",
+                    source_id,
+                    user_id,
+                )
+            else:
+                source_row = await conn.fetchrow(
+                    "SELECT type FROM sources WHERE url=$1 AND user_id=$2 LIMIT 1",
+                    source_url,
+                    user_id,
+                )
+            source_type = source_row["type"] if source_row else "web"
+
+            # No Evidence -> No Note: require a real extraction row for this
+            # source. For discovery_provider channels, multiple video extractions
+            # share the same source_id — prefer the row whose source_url matches
+            # the candidate's own URL so the right transcript is used.
+            evidence = None
+            if source_id:
+                evidence = await conn.fetchrow(
+                    """SELECT text FROM source_extractions
+                       WHERE source_id=$1
+                       ORDER BY
+                           CASE WHEN source_url=$2 THEN 0 ELSE 1 END,
+                           extracted_at DESC
+                       LIMIT 1""",
+                    source_id,
+                    source_url,
+                )
 
         existing_titles = [r["title"] for r in existing_rows]
 
-        await progress(30)
-
-        source_url = candidate["source_info"]
-        async with pool.acquire() as conn:
-            source_row = await conn.fetchrow(
-                "SELECT type FROM sources WHERE url=$1 AND user_id=$2 LIMIT 1",
-                source_url,
-                user_id,
-            )
-            source_type = source_row["type"] if source_row else "web"
-
         await progress(40)
 
-        extracted = None
-        try:
-            extracted = await adapter_extract(source_type, source_url)
-        except Exception:
-            pass
+        if not evidence or not evidence["text"]:
+            raise NoEvidenceError("Source has not been extracted yet")
 
-        text = ""
-        if extracted and extracted.text:
-            text = extracted.text
-        elif candidate["summary"]:
-            text = candidate["summary"]
+        text = evidence["text"]
 
         await progress(60)
 
@@ -277,14 +862,25 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
         await progress(85)
 
         async with pool.acquire() as conn:
+            existing = await conn.fetchval(
+                "SELECT id FROM notes WHERE candidate_id=$1",
+                candidate_id,
+            )
+            if existing:
+                await progress(100)
+                return f"Note already exists for candidate {candidate_id} — skipping duplicate"
+
             await conn.execute(
                 """INSERT INTO notes
-                   (user_id, title, source, ai_action, quality_score, has_duplicate,
-                    content, frontmatter, citations, wiki_links, similarity_reasoning, status)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
+                   (user_id, title, source, topic_id, source_id, ai_action, quality_score,
+                    has_duplicate, content, frontmatter, citations, wiki_links,
+                    similarity_reasoning, status, candidate_id)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)""",
                 user_id,
                 note_result.title,
                 source_url,
+                topic_id,
+                source_id,
                 note_result.ai_action,
                 note_result.quality_score,
                 False,
@@ -294,10 +890,16 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                 note_result.wiki_links,
                 note_result.similarity_reasoning,
                 "pending",
+                candidate_id,
             )
 
         await progress(100)
         return f"Note '{note_result.title}' generated (quality: {note_result.quality_score:.2f})"
+    except NoEvidenceError:
+        # A real failure, not a completed-with-a-bad-outcome job. Let it
+        # propagate to runner._run_job, which marks status='failed' and
+        # persists .code as jobs.error_code.
+        raise
     except Exception as e:
         await progress(100)
         return f"Note generation handler failed: {str(e)[:100]}"
@@ -508,16 +1110,6 @@ async def _cleanup_handler(job: dict[str, Any], progress: ProgressFn, pool: Any)
                         source_path = Path(source_url)
                         if source_path.exists() and source_path.is_file():
                             source_path.unlink()
-                            async with pool.acquire() as conn:
-                                await conn.execute(
-                                    """INSERT INTO processing_log
-                                       (user_id, job_type, status, details)
-                                       VALUES ($1, $2, $3, $4)""",
-                                    user_id,
-                                    "Cleanup",
-                                    "deleted",
-                                    f"Deleted source file: {source_url}",
-                                )
                             processed += 1
                     except Exception:
                         pass

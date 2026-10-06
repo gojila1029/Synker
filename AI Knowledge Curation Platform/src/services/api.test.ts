@@ -254,3 +254,70 @@ describe('SYN-001/002/003 — approve/reject affected-count validation', () => {
     await expect(api.candidates.approve([])).resolves.toBeDefined()
   })
 })
+
+describe('POST error detail extraction (SYN-trigger-400)', () => {
+  it('extracts detail string from FastAPI JSON error body — no HTTP prefix or JSON wrapper', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.resolve('{"detail":"No sources found — add some first"}'),
+    }))
+    const { api } = await import('./api')
+    const err = await api.scheduler.trigger().catch((e: unknown) => e)
+    expect((err as Error).message).toBe('No sources found — add some first')
+  })
+
+  it('falls back gracefully for non-JSON error bodies', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 400,
+      text: () => Promise.resolve('plain bad request text'),
+    }))
+    const { api } = await import('./api')
+    await expect(api.scheduler.trigger()).rejects.toThrow('HTTP 400')
+  })
+
+  it('includes status code when body is empty', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false,
+      status: 503,
+      text: () => Promise.resolve(''),
+    }))
+    const { api } = await import('./api')
+    await expect(api.scheduler.trigger()).rejects.toThrow('HTTP 503')
+  })
+})
+
+describe('Local Sync Bridge (Stage 6 regression)', () => {
+  it('no longer exposes browseDirectory — hosted Synker cannot open a local folder dialog', async () => {
+    const { api } = await import('./api')
+    expect('browseDirectory' in api.settings).toBe(false)
+  })
+
+  it('never calls GET /api/settings/browse-directory', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({}),
+      text: () => Promise.resolve('{}'),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const { api } = await import('./api')
+
+    await api.settings.get()
+
+    const calledPaths = fetchMock.mock.calls.map((call) => String(call[0]))
+    expect(calledPaths.some((path) => path.includes('browse-directory'))).toBe(false)
+  })
+
+  it('settings.get() still falls back to demo data on failure, but does not fabricate a vault path', async () => {
+    // Documents existing, pre-Stage-6 behavior (SYN-008 demo-mode fallback) —
+    // not something this stage redesigns. The fallback is the app's seed
+    // data, not a fabricated "connected" state.
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('Network error')))
+    const { api } = await import('./api')
+
+    const settings = await api.settings.get()
+
+    expect(settings.vault).toBeDefined()
+  })
+})

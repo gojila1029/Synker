@@ -15,7 +15,7 @@ router = APIRouter()
 @router.get("")
 async def list_topics(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     rows = await db.fetch(
@@ -29,7 +29,7 @@ async def list_topics(
 async def create_topic(
     body: dict[str, Any],
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     color = body.get("color", "#3b82f6")
@@ -49,7 +49,7 @@ async def create_topic(
 async def delete_topic(
     topic_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> Response:
     user_id = current_user["sub"]
     try:

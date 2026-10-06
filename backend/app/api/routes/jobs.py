@@ -25,7 +25,7 @@ def _format_duration(started_at: Any, finished_at: Any) -> str:
 @router.get("")
 async def list_jobs(
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> list[dict[str, Any]]:
     user_id = current_user["sub"]
     try:
@@ -33,7 +33,7 @@ async def list_jobs(
     except ValueError:
         return []
     rows = await db.fetch(
-        """SELECT id, source_title, type, status, progress, error,
+        """SELECT id, source_title, type, status, progress, error, error_code,
                   artifact_path, started_at, finished_at
            FROM jobs WHERE user_id=$1 ORDER BY started_at DESC LIMIT 100""",
         uid,
@@ -46,6 +46,7 @@ async def list_jobs(
             "status": r["status"],
             "progress": r["progress"],
             "error": r["error"],
+            "errorCode": r["error_code"],
             "artifactPath": r["artifact_path"],
             "startedAt": r["started_at"].isoformat() if r["started_at"] else None,
             "duration": "—" if r["status"] == "queued"
@@ -59,7 +60,7 @@ async def list_jobs(
 async def delete_job(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> Response:
     user_id = current_user["sub"]
     try:
@@ -77,7 +78,7 @@ async def delete_job(
 async def cancel_job(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:
@@ -98,7 +99,7 @@ async def cancel_job(
 async def retry_job(
     job_id: str,
     current_user: dict[str, Any] = Depends(get_current_user),
-    db: asyncpg.Connection = Depends(get_db),  # type: ignore[type-arg]
+    db: asyncpg.Connection = Depends(get_db),
 ) -> dict[str, Any]:
     user_id = current_user["sub"]
     try:

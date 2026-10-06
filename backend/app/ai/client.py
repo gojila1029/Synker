@@ -3,8 +3,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import UTC, datetime
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
@@ -19,11 +18,12 @@ class NoteResult:
     quality_score: float = 0.0
     ai_action: str = "created"
     similarity_reasoning: str = ""
-    error: Optional[str] = None
+    error: str | None = None
 
 
 _NOTE_PROMPT = """\
-You are a knowledge management assistant. Convert the source content below into a well-structured Obsidian Markdown note.
+You are a knowledge management assistant. Convert the source content below into a \
+well-structured Obsidian Markdown note.
 
 Source URL: {source_url}
 Source type: {source_type}
@@ -35,12 +35,16 @@ Content:
 
 Respond with a single JSON object (no markdown fences) containing exactly these keys:
   "title"               – concise, descriptive note title (string)
-  "content"             – Markdown body with ## headings and bullet points (string, NO YAML frontmatter)
-  "citations"           – list of citation strings each formatted as "Title – URL (date if known)"
-  "wiki_links"          – list of exact titles from the existing note titles that are semantically related
+  "content"             – Markdown body with ## headings and bullet points (string, \
+NO YAML frontmatter)
+  "citations"           – list of citation strings each formatted as \
+"Title – URL (date if known)"
+  "wiki_links"          – list of exact titles from the existing note titles that \
+are semantically related
   "quality_score"       – float 0.0–1.0: how complete and accurate the note is
   "ai_action"           – one of "created", "merged", or "updated"
-  "similarity_reasoning" – one sentence on overlap with existing notes, or "No significant overlap found"
+  "similarity_reasoning" – one sentence on overlap with existing notes, or \
+"No significant overlap found"
 
 Do not fabricate information absent from the source.
 """
@@ -114,7 +118,7 @@ def _build_frontmatter(title: str, source_url: str, source_type: str) -> dict[st
         "title": title,
         "source": source_url,
         "source_type": source_type,
-        "created": datetime.now(timezone.utc).isoformat(),
+        "created": datetime.now(UTC).isoformat(),
         "tags": source_type,
     }
 
@@ -129,6 +133,7 @@ async def _generate_with_claude(
 ) -> NoteResult:
     try:
         import anthropic
+        from anthropic.types import TextBlock
     except ImportError:
         return NoteResult(
             title="",
@@ -156,7 +161,15 @@ async def _generate_with_claude(
             messages=[{"role": "user", "content": prompt}],
         )
 
-        response_dict = _parse_note_response(message.content[0].text)
+        text_block = next((b for b in message.content if isinstance(b, TextBlock)), None)
+        if text_block is None:
+            return NoteResult(
+                title=title,
+                content="",
+                frontmatter=_build_frontmatter(title, source_url, source_type),
+                error="AI returned no text content.",
+            )
+        response_dict = _parse_note_response(text_block.text)
         if not response_dict:
             return NoteResult(
                 title=title,
@@ -245,7 +258,15 @@ async def _generate_with_openai(
             response_format={"type": "json_object"},
         )
 
-        response_dict = _parse_note_response(response.choices[0].message.content)
+        raw_content = response.choices[0].message.content
+        if not raw_content:
+            return NoteResult(
+                title=title,
+                content="",
+                frontmatter=_build_frontmatter(title, source_url, source_type),
+                error="Note generation failed. Check Settings > AI Providers.",
+            )
+        response_dict = _parse_note_response(raw_content)
         if not response_dict:
             return NoteResult(
                 title=title,

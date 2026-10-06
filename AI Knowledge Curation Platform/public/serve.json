@@ -1,4 +1,13 @@
 {
+  "headers": [
+    {
+      "source": "**/*.html",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, no-cache, must-revalidate" },
+        { "key": "Accept-Ranges", "value": "none" }
+      ]
+    }
+  ],
   "rewrites": [
     { "source": "**", "destination": "/index.html" }
   ]

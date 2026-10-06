@@ -6,16 +6,30 @@ from app.worker import handlers, runner
 
 
 class FakeConn:
-    def __init__(self, fetchrow_result=None):
+    def __init__(self, fetchrow_result=None, fetch_result=None, fetchval_result=None):
         self._fetchrow_result = fetchrow_result
+        self._fetch_result = fetch_result if fetch_result is not None else []
+        self._fetchval_result = fetchval_result
         self.executed: list[tuple] = []
+        self.fetchval_calls: list[tuple] = []
+
+    async def fetch(self, sql, *args):
+        return self._fetch_result
 
     async def fetchrow(self, sql, *args):
         return self._fetchrow_result
 
+    async def fetchval(self, sql, *args):
+        self.fetchval_calls.append((sql, args))
+        return self._fetchval_result
+
     async def execute(self, sql, *args):
         self.executed.append((sql, args))
         return "UPDATE 1"
+
+
+async def _noop_progress(pct):
+    pass
 
 
 class FakePool:
@@ -53,7 +67,7 @@ async def test_claim_one_returns_none_when_queue_empty():
 
 
 async def test_run_job_completes_and_logs(monkeypatch):
-    async def _fast_handler(job, progress):
+    async def _fast_handler(job, progress, pool):
         await progress(50)
         return "done"
 
@@ -91,18 +105,247 @@ async def test_reap_stale_issues_update():
     assert "make_interval" in sql
 
 
-async def test_discovery_handler_is_honest(monkeypatch):
-    monkeypatch.setattr(handlers, "STEP_DELAY_SECONDS", 0)
+async def test_analysis_handler_with_no_sources():
     seen: list[int] = []
 
     async def _progress(pct):
         seen.append(pct)
 
-    result = await handlers._discovery_handler({"type": "Analysis"}, _progress)
+    import uuid as _uuid
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    pool = FakePool(FakeConn())  # fetch returns [] — no sources
+    result = await handlers._analysis_handler({"user_id": user_id}, _progress, pool)
 
-    assert seen == [20, 60, 90]
-    assert "0 new candidates" in result
-    assert "no source adapters" in result
+    assert 100 in seen
+    assert "0 candidates" in result
+
+
+async def test_analysis_handler_preserves_real_error_on_failed_extraction(monkeypatch):
+    """Stage 6 verification-loop ROOT CAUSE #1/#3: a source with no title and
+    a failed extraction must not surface as a healthy-looking "Unknown"
+    candidate with a generic "Extraction pending" summary and a normal
+    0.75/0.70 score — that misrepresents a real failure as a good result."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+
+    async def _failing_extract(source_type, url):
+        return ExtractedContent(
+            text="", title="", error=f"Cannot extract video ID from URL: {url}",
+        )
+
+    monkeypatch.setattr(handlers, "adapter_extract", _failing_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000bb")
+    source = {
+        "id": source_id, "type": "youtube", "title": "", "url": "https://www.youtube.com/",
+        "source_scope": "direct_resource",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
+    assert len(inserts) == 1
+    args = inserts[0]
+    title, summary, quality_score, confidence_score, recommendation = (
+        args[2], args[12], args[7], args[8], args[6],
+    )
+    assert title != "Unknown"
+    assert "Cannot extract video ID" in summary
+    assert quality_score == 0.0
+    assert confidence_score == 0.0
+    assert recommendation != "process"
+
+
+async def test_analysis_handler_skips_extraction_for_unsupported_discovery(monkeypatch):
+    """A discovery_provider source (e.g. a channel URL) that the real
+    discovery engine (app/adapters/youtube_discovery.py) cannot enumerate --
+    a search-result page, or a genuine yt-dlp failure -- must still be
+    skipped honestly instead of falling through to direct extraction, which
+    would only produce a misleading "Unknown" candidate."""
+    import uuid as _uuid
+
+    from app.adapters.youtube_discovery import DiscoveryResult
+
+    called = False
+
+    async def _should_not_be_called(source_type, url):
+        nonlocal called
+        called = True
+        raise AssertionError("adapter_extract must not be called when discovery is unsupported")
+
+    async def _fake_discover(url, limit=25):
+        return DiscoveryResult(unsupported_reason="Search result pages are not supported")
+
+    monkeypatch.setattr(handlers, "adapter_extract", _should_not_be_called)
+    monkeypatch.setattr(handlers, "discover_channel_videos", _fake_discover)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000cc")
+    source = {
+        "id": source_id, "type": "youtube", "title": "",
+        "url": "https://www.youtube.com/results?search_query=insurance",
+        "source_scope": "discovery_provider",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    result = await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    assert called is False
+    inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
+    assert len(inserts) == 0
+    assert "0 candidate" in result
+    log_calls = [args for sql, args in conn.executed if "processing_log" in sql]
+    assert any("Search result pages" in str(args) for args in log_calls)
+
+
+async def test_analysis_handler_discovery_provider_creates_candidates_from_videos(monkeypatch):
+    """Once discovery succeeds, each discovered video becomes its own
+    candidate (source_id pointing back to the channel/playlist source) with
+    its own real transcript persisted as Evidence -- not a single misleading
+    candidate for the channel itself."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+    from app.adapters.youtube_discovery import DiscoveredVideo, DiscoveryResult
+
+    async def _fake_discover(url, limit=25):
+        return DiscoveryResult(
+            videos=[
+                DiscoveredVideo(url="https://www.youtube.com/watch?v=vid1", title="Video 1"),
+                DiscoveredVideo(url="https://www.youtube.com/watch?v=vid2", title="Video 2"),
+            ]
+        )
+
+    async def _fake_extract(source_type, url):
+        return ExtractedContent(
+            text=f"Real transcript for {url}.",
+            title="Real title",
+            source_type=source_type,
+            word_count=4,
+        )
+
+    monkeypatch.setattr(handlers, "discover_channel_videos", _fake_discover)
+    monkeypatch.setattr(handlers, "adapter_extract", _fake_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000cc")
+    source = {
+        "id": source_id, "type": "youtube", "title": "My Channel",
+        "url": "https://www.youtube.com/@somechannel",
+        "source_scope": "discovery_provider",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    result = await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    candidate_inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
+    evidence_inserts = [
+        args for sql, args in conn.executed if "INSERT INTO source_extractions" in sql
+    ]
+    assert len(candidate_inserts) == 2
+    assert len(evidence_inserts) == 2
+    assert "2 candidate" in result
+    # Both candidates carry the channel source's id for lineage, but their
+    # own video URL as source_info -- not the channel URL for both.
+    source_ids_used = {args[1] for args in candidate_inserts}
+    assert source_ids_used == {source_id}
+    urls_used = {args[3] for args in candidate_inserts}
+    assert urls_used == {
+        "https://www.youtube.com/watch?v=vid1",
+        "https://www.youtube.com/watch?v=vid2",
+    }
+    log_calls = [sql for sql, args in conn.executed if "processing_log" in sql]
+    assert any("discovery_completed" in sql for sql in log_calls)
+
+
+async def test_dedup_check_does_not_filter_by_pending_status(monkeypatch):
+    """A candidate the user already approved or rejected is no longer
+    'pending' -- checking only status='pending' would let a later Analysis
+    or discovery run silently recreate it. The dedup check must consider
+    a candidate for the same source_info regardless of its status."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+
+    async def _fake_extract(source_type, url):
+        return ExtractedContent(text="Some text.", title="T", source_type=source_type, word_count=2)
+
+    monkeypatch.setattr(handlers, "adapter_extract", _fake_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source = {
+        "id": _uuid.UUID("00000000-0000-0000-0000-0000000000ee"),
+        "type": "web", "title": "", "url": "https://example.com/article",
+        "source_scope": "direct_resource",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    dedup_calls = [sql for sql, _ in conn.fetchval_calls if "FROM candidates" in sql]
+    assert len(dedup_calls) == 1
+    assert "status='pending'" not in dedup_calls[0]
+
+
+async def test_analysis_handler_persists_evidence_on_successful_extraction(monkeypatch):
+    """No code path anywhere in the backend ever creates a job of type
+    'Extraction' (verified by grepping every INSERT INTO jobs call site) —
+    _extraction_handler and every adapter exist and work, but nothing
+    automatically triggers them. That leaves source_extractions permanently
+    empty, so _note_gen_handler's NoEvidenceError check fails every single
+    Note Gen job, for every source type, forever. _analysis_handler already
+    fetches the full ExtractedContent to build the candidate summary — it
+    must persist that same content as Evidence instead of only using a
+    500-char truncation for display, or Notes can never be generated."""
+    import uuid as _uuid
+
+    from app.adapters.base import ExtractedContent
+
+    async def _fake_extract(source_type, url):
+        return ExtractedContent(
+            text="Full real transcript text, much longer than 500 chars for the summary.",
+            title="Real Title",
+            author="Real Author",
+            published_at="2026-01-01T00:00:00Z",
+            source_type=source_type,
+            word_count=11,
+            timestamps=[{"seconds": 0, "text": "Full"}],
+        )
+
+    monkeypatch.setattr(handlers, "adapter_extract", _fake_extract)
+
+    user_id = _uuid.UUID("00000000-0000-0000-0000-000000000001")
+    source_id = _uuid.UUID("00000000-0000-0000-0000-0000000000dd")
+    source = {
+        "id": source_id,
+        "type": "youtube",
+        "title": "",
+        "url": "https://www.youtube.com/watch?v=abc12345678",
+        "source_scope": "direct_resource",
+    }
+    conn = FakeConn(fetch_result=[source], fetchval_result=None)
+    pool = FakePool(conn)
+
+    await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
+
+    inserts = [
+        (sql, args) for sql, args in conn.executed if "INSERT INTO source_extractions" in sql
+    ]
+    assert len(inserts) == 1, (
+        "a successful extraction must be persisted as Evidence — otherwise "
+        "Note Gen can never find it and every candidate stays stuck forever"
+    )
+    _, args = inserts[0]
+    assert source_id in args
+    assert user_id in args
+    assert any("Full real transcript text" in str(a) for a in args)
 
 
 @pytest.mark.parametrize("tag,expected", [("UPDATE 1", True), ("UPDATE 0", False), (None, True)])
