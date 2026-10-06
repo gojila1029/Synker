@@ -1,17 +1,84 @@
 ﻿import uuid
+from pathlib import Path
 from typing import Any
 
 import asyncpg
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import Response
 
 from app.adapters.classify import classify_source_scope
 from app.api.deps import get_current_user, get_db
-from app.schemas.sources import SourceCreate
+from app.schemas.sources import FileUploadResponse, SourceCreate
 
 router = APIRouter()
 
 # TS counterpart: src/types/index.ts — Source
+
+UPLOAD_ROOT = Path(__file__).parent.parent.parent / "uploads"
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
+ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".doc", ".docx", ".docm"}
+
+
+@router.post("/upload")
+async def upload_files(
+    files: list[UploadFile] = File(...),
+    relative_paths: list[str] = Form(default=[]),
+    current_user: dict[str, Any] = Depends(get_current_user),
+    db: asyncpg.Connection = Depends(get_db),
+) -> FileUploadResponse:
+    user_id = current_user["sub"]
+    upload_id = str(uuid.uuid4())
+    user_upload_dir = UPLOAD_ROOT / user_id / upload_id
+    user_upload_dir.mkdir(parents=True, exist_ok=True)
+
+    stored_paths: list[str] = []
+    try:
+        for i, file in enumerate(files):
+            # Validate extension
+            filename = file.filename or ""
+            suffix = Path(filename).suffix.lower()
+            if suffix not in ALLOWED_EXTENSIONS:
+                raise HTTPException(
+                    400, detail=f"File type not allowed: {suffix}"
+                )
+
+            # Determine target path (preserve relative folder structure)
+            relative_path = (
+                relative_paths[i] if i < len(relative_paths) else filename
+            )
+            safe_relative = Path(relative_path).as_posix().lstrip("/")
+
+            # Security: reject traversal
+            target = (user_upload_dir / safe_relative).resolve()
+            if not str(target).startswith(str(user_upload_dir.resolve())):
+                raise HTTPException(400, detail="Path traversal rejected")
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+            # Read and validate size
+            content = await file.read()
+            if len(content) > MAX_FILE_SIZE:
+                raise HTTPException(
+                    400,
+                    detail=f"File size exceeds 500 MB: {filename}",
+                )
+
+            target.write_bytes(content)
+            stored_paths.append(str(target))
+    except HTTPException:
+        raise
+    except Exception as e:
+        import shutil
+
+        shutil.rmtree(user_upload_dir, ignore_errors=True)
+        raise HTTPException(500, detail=f"Upload failed: {str(e)}")
+
+    return FileUploadResponse(
+        status="success",
+        upload_id=upload_id,
+        paths=stored_paths,
+        message=f"{len(stored_paths)} file(s) uploaded successfully",
+    )
 
 
 @router.get("")

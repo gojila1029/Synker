@@ -50,3 +50,10 @@ class SourceCreate(CamelModel):
             raise ValueError(f"{self.discovery_mode} discovery mode requires a non-empty keyword")
 
         return self
+
+
+class FileUploadResponse(CamelModel):
+    status: str
+    upload_id: str
+    paths: list[str]
+    message: str

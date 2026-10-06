@@ -100,6 +100,24 @@ async function DELETE_REQ(path: string): Promise<void> {
   _isDemo = false;
 }
 
+async function UPLOAD<T>(path: string, formData: FormData): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: formData,
+    signal: AbortSignal.timeout(120000),
+  });
+  if (res.status === 401) throw new UnauthorizedError();
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(httpErrorMessage(res.status, text));
+  }
+  _failStreak = 0;
+  _isDemo = false;
+  const text = await res.text();
+  return (text ? JSON.parse(text) : undefined) as T;
+}
+
 export const api = {
   dashboard: {
     getStats: () => GET<DashboardStats | null>("/api/dashboard/stats", null),
@@ -115,6 +133,14 @@ export const api = {
     add: (payload: Partial<Source>) => POST<Source>("/api/sources", payload),
     delete: (id: string) => DELETE_REQ(`/api/sources/${id}`),
     reset: (id: string) => PATCH(`/api/sources/${id}/reset`, {}),
+    upload: (files: File[], relativePaths: string[], type: "local" | "pdf") => {
+      const formData = new FormData();
+      files.forEach(f => formData.append("files", f));
+      relativePaths.forEach(p => formData.append("relative_paths", p));
+      return UPLOAD<{ status: string; uploadId: string; paths: string[]; message: string }>(
+        "/api/sources/upload", formData
+      );
+    },
   },
   candidates: {
     list: () => GET<Candidate[]>("/api/candidates", seedCandidates),

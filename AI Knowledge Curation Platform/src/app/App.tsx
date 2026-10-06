@@ -422,11 +422,20 @@ function SourcesScreen() {
   const [localFolderPath, setLocalFolderPath] = useState("");
   const [localFolderTopic, setLocalFolderTopic] = useState("");
   const [localFolderSaving, setLocalFolderSaving] = useState(false);
+  const [localFiles, setLocalFiles] = useState<File[]>([]);
+  const [localRelPaths, setLocalRelPaths] = useState<string[]>([]);
+  const [localDisplayName, setLocalDisplayName] = useState<string>("");
+  const [localFolderUploading, setLocalFolderUploading] = useState(false);
+  const localFolderInputRef = useRef<HTMLInputElement>(null);
+  const localFileInputRef = useRef<HTMLInputElement>(null);
 
   // PDF state
   const [pdfUrl, setPdfUrl] = useState("");
   const [pdfTopic, setPdfTopic] = useState("");
   const [pdfSaving, setPdfSaving] = useState(false);
+  const [selectedPdfFile, setSelectedPdfFile] = useState<File | null>(null);
+  const [pdfUploading, setPdfUploading] = useState(false);
+  const pdfFileInputRef = useRef<HTMLInputElement>(null);
 
   // AI parse state
   const [youtubeParseMessage, setYoutubeParseMessage] = useState("");
@@ -562,35 +571,77 @@ function SourcesScreen() {
     }
   }
 
+  function handleLocalFolderFileChange(e: React.ChangeEvent<HTMLInputElement>, mode: "folder" | "files") {
+    const fileList = Array.from(e.currentTarget.files ?? []);
+    if (fileList.length === 0) return;
+    const relPaths = fileList.map(f => (f as any).webkitRelativePath || f.name);
+    setLocalFiles(fileList);
+    setLocalRelPaths(relPaths);
+    if (mode === "folder") {
+      const folderName = relPaths[0]?.split("/")[0] ?? "Folder";
+      setLocalDisplayName(`${folderName} (${fileList.length} file${fileList.length === 1 ? "" : "s"})`);
+    } else {
+      setLocalDisplayName(`${fileList.length} file${fileList.length === 1 ? "" : "s"} selected`);
+    }
+    e.currentTarget.value = "";
+  }
+
   async function handleLocalFolderSave() {
-    if (!localFolderPath.trim() || localFolderSaving) return;
+    if ((!localFiles.length && !localFolderPath.trim()) || localFolderSaving) return;
     setLocalFolderSaving(true);
     try {
+      let urlToSave = localFolderPath.trim();
+      if (localFiles.length > 0) {
+        setLocalFolderUploading(true);
+        const res = await api.sources.upload(localFiles, localRelPaths, "local");
+        urlToSave = res.paths[0] ?? res.paths[0];
+        setLocalFolderUploading(false);
+      }
+      if (!urlToSave) return;
       await api.sources.add({
         type: "local",
-        url: localFolderPath.trim(),
+        url: urlToSave,
         topicId: localFolderTopic || null,
         discovery_mode: "single",
         discovery_limit: 1,
       });
       toast.success("Local folder source added");
-      setLocalFolderPath("");
+      setLocalFiles([]);
+      setLocalRelPaths([]);
+      setLocalDisplayName("");
       setLocalFolderTopic("");
+      setLocalFolderPath("");
       refetch();
     } catch (e) {
       toast.error(`Failed to add: ${e instanceof Error ? e.message : "Request failed"}`);
     } finally {
       setLocalFolderSaving(false);
+      setLocalFolderUploading(false);
     }
   }
 
+  function handlePdfFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.currentTarget.files?.[0];
+    if (!file) return;
+    setSelectedPdfFile(file);
+    setPdfUrl("");
+    e.currentTarget.value = "";
+  }
+
   async function handlePdfSave() {
-    if (!pdfUrl.trim() || pdfSaving) return;
+    if ((!pdfUrl.trim() && !selectedPdfFile) || pdfSaving) return;
     setPdfSaving(true);
     try {
+      let urlToSave = pdfUrl.trim();
+      if (selectedPdfFile) {
+        setPdfUploading(true);
+        const res = await api.sources.upload([selectedPdfFile], [selectedPdfFile.name], "pdf");
+        urlToSave = res.paths[0];
+        setPdfUploading(false);
+      }
       await api.sources.add({
         type: "pdf",
-        url: pdfUrl.trim(),
+        url: urlToSave,
         topicId: pdfTopic || null,
         discovery_mode: "single",
         discovery_limit: 1,
@@ -598,11 +649,13 @@ function SourcesScreen() {
       toast.success("PDF source added");
       setPdfUrl("");
       setPdfTopic("");
+      setSelectedPdfFile(null);
       refetch();
     } catch (e) {
       toast.error(`Failed to add: ${e instanceof Error ? e.message : "Request failed"}`);
     } finally {
       setPdfSaving(false);
+      setPdfUploading(false);
     }
   }
 
@@ -990,14 +1043,44 @@ function SourcesScreen() {
               <h3 className="text-sm font-semibold text-slate-800 mb-3">Local Folder or File</h3>
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Folder or file path</label>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">Select Folder or File(s)</label>
                   <input
-                    value={localFolderPath}
-                    onChange={(e) => setLocalFolderPath(e.target.value)}
-                    placeholder="e.g. C:\Users\you\Documents\notes  or  /Users/you/notes/file.md"
-                    className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
+                    ref={localFolderInputRef}
+                    type="file"
+                    // @ts-ignore
+                    webkitdirectory=""
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={(e) => handleLocalFolderFileChange(e, "folder")}
                   />
-                  <p className="text-xs text-slate-400 mt-1">Supports .txt, .md, and .pdf files. The path must be accessible from the server.</p>
+                  <input
+                    ref={localFileInputRef}
+                    type="file"
+                    multiple
+                    accept=".txt,.md,.pdf,.doc,.docx,.docm"
+                    style={{ display: "none" }}
+                    onChange={(e) => handleLocalFolderFileChange(e, "files")}
+                  />
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => localFolderInputRef.current?.click()}
+                      className="flex-1 justify-center"
+                    >
+                      <FolderClosed className="size-3.5" /> Browse Folder
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => localFileInputRef.current?.click()}
+                      className="flex-1 justify-center"
+                    >
+                      <File className="size-3.5" /> Browse File(s)
+                    </Button>
+                  </div>
+                  {localDisplayName && <p className="text-xs text-slate-600 mt-1.5">Selected: {localDisplayName}</p>}
+                  {!localDisplayName && <p className="text-xs text-slate-400 mt-1">Supports .txt, .md, .pdf, .doc, .docx files</p>}
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
@@ -1014,10 +1097,10 @@ function SourcesScreen() {
                   onClick={handleLocalFolderSave}
                   variant="primary"
                   size="sm"
-                  disabled={localFolderSaving || !localFolderPath.trim()}
+                  disabled={localFolderSaving || localFolderUploading || (!localFiles.length && !localFolderPath.trim())}
                   className="w-full justify-center"
                 >
-                  {localFolderSaving ? "Saving…" : "Save Source"}
+                  {localFolderUploading ? "Uploading…" : localFolderSaving ? "Saving…" : "Save Source"}
                 </Button>
               </div>
             </div>
@@ -1027,16 +1110,35 @@ function SourcesScreen() {
               <h3 className="text-sm font-semibold text-slate-800 mb-3">PDF Document</h3>
               <div className="space-y-3">
                 <div>
-                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">PDF URL or local file path</label>
+                  <label className="text-xs font-medium text-slate-600 mb-1.5 block">PDF URL or local file</label>
                   <input
                     value={pdfUrl}
                     onChange={(e) => setPdfUrl(e.target.value)}
                     data-testid="pdf-url-input"
-                    placeholder="https://example.com/document.pdf or /path/to/file.pdf"
+                    placeholder="https://example.com/document.pdf"
                     className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 transition-all"
                   />
-                  <p className="text-xs text-slate-400 mt-1">Supports HTTPS URLs or local file paths. The path must be accessible from the server.</p>
+                  <p className="text-xs text-slate-400 mt-1">Supports HTTPS URLs</p>
                 </div>
+                <input
+                  ref={pdfFileInputRef}
+                  type="file"
+                  accept=".pdf"
+                  style={{ display: "none" }}
+                  onChange={handlePdfFileChange}
+                />
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => pdfFileInputRef.current?.click()}
+                  disabled={pdfUploading || pdfSaving}
+                  className="w-full justify-center"
+                >
+                  <File className="size-3.5" /> {pdfUploading ? "Uploading…" : "Browse Local PDF"}
+                </Button>
+                {selectedPdfFile && (
+                  <p className="text-xs text-slate-600">Selected: {selectedPdfFile.name}</p>
+                )}
                 <div>
                   <label className="text-xs font-medium text-slate-600 mb-1.5 block">Topic</label>
                   <select
@@ -1053,10 +1155,10 @@ function SourcesScreen() {
                   data-testid="add-pdf-source-btn"
                   variant="primary"
                   size="sm"
-                  disabled={pdfSaving || !pdfUrl.trim()}
+                  disabled={pdfSaving || pdfUploading || (!pdfUrl.trim() && !selectedPdfFile)}
                   className="w-full justify-center"
                 >
-                  {pdfSaving ? "Saving…" : "Save Source"}
+                  {pdfUploading ? "Uploading…" : pdfSaving ? "Saving…" : "Save Source"}
                 </Button>
               </div>
             </div>
