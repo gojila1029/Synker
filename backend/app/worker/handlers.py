@@ -6,6 +6,7 @@ fabricate notes, candidates, or citations — if there is nothing real to do, th
 say so honestly. Handlers should handle all exceptions gracefully and return a
 meaningful error message rather than crashing.
 """
+import datetime
 import json
 import logging
 import os
@@ -153,6 +154,21 @@ def _safe_filename(title: str) -> str:
     return safe[:100]
 
 
+def _parse_date(value: str | None) -> datetime.datetime | None:
+    """Parse an ISO-8601 date string from trafilatura into a datetime.
+
+    asyncpg requires a datetime object for TIMESTAMP columns; trafilatura
+    returns plain strings like '2024-01-15' or '2024-01-15T12:00:00'.
+    Returns None on any parse failure so callers never crash.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (ValueError, AttributeError):
+        return None
+
+
 def _candidate_fields(
     extracted: ExtractedContent | None, fallback_title: str, domain: str
 ) -> dict[str, Any]:
@@ -177,7 +193,7 @@ def _candidate_fields(
     return {
         "title": extracted.title if extracted else fallback_title,
         "summary": extracted.text[:500] if extracted and extracted.text else "",
-        "published_at": extracted.published_at if extracted else None,
+        "published_at": _parse_date(extracted.published_at) if extracted else None,
         "word_count": extracted.word_count if extracted else 0,
         "recommendation": "process",
         "quality_score": 0.75,
@@ -258,7 +274,7 @@ async def _create_candidate_with_evidence(
                 extracted.text,
                 extracted.title,
                 extracted.author,
-                extracted.published_at,
+                _parse_date(extracted.published_at),
                 timestamps_json,
                 extracted.word_count,
             )
@@ -427,7 +443,7 @@ async def _discover_youtube_keyword(
                     video_extracted.text,
                     video_extracted.title,
                     video_extracted.author,
-                    video_extracted.published_at,
+                    _parse_date(video_extracted.published_at),
                     timestamps_json,
                     video_extracted.word_count,
                 )
@@ -554,7 +570,7 @@ async def _discover_website_keyword(
                     website_extracted.text,
                     website_extracted.title,
                     website_extracted.author,
-                    website_extracted.published_at,
+                    _parse_date(website_extracted.published_at),
                     timestamps_json,
                     website_extracted.word_count,
                 )

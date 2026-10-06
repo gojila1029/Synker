@@ -1,12 +1,12 @@
 """Tests for the extraction handler."""
+import datetime
 import json
-from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock, patch, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
-from app.adapters.base import ExtractionError, ExtractedContent
-from app.worker.handlers import _extraction_handler
+from app.adapters.base import ExtractedContent, ExtractionError
+from app.worker.handlers import _extraction_handler, _parse_date
 
 
 class AsyncContextManagerMock:
@@ -200,3 +200,72 @@ async def test_extraction_handler_timestamps_serialization():
     insert_call = [c for c in calls if "INSERT" in c[0][0]][0]
     timestamps_arg = insert_call[0][7]  # 8th parameter
     assert timestamps_arg == json.dumps(timestamps)
+
+
+# Tests for _parse_date function
+def test_parse_date_iso_date_string():
+    """Test parsing a simple ISO date string like '2024-01-15'."""
+    result = _parse_date("2024-01-15")
+    assert result is not None
+    assert isinstance(result, datetime.datetime)
+    assert result.year == 2024
+    assert result.month == 1
+    assert result.day == 15
+
+
+def test_parse_date_iso_datetime_string():
+    """Test parsing an ISO datetime string with time like '2024-01-15T12:30:00'."""
+    result = _parse_date("2024-01-15T12:30:00")
+    assert result is not None
+    assert isinstance(result, datetime.datetime)
+    assert result.year == 2024
+    assert result.month == 1
+    assert result.day == 15
+    assert result.hour == 12
+    assert result.minute == 30
+    assert result.second == 0
+
+
+def test_parse_date_iso_datetime_with_z_suffix():
+    """Test parsing ISO datetime with 'Z' suffix (UTC indicator)."""
+    result = _parse_date("2024-01-15T12:30:00Z")
+    assert result is not None
+    assert isinstance(result, datetime.datetime)
+    assert result.year == 2024
+    assert result.month == 1
+    assert result.day == 15
+    assert result.hour == 12
+    assert result.minute == 30
+    assert result.second == 0
+    # Should have timezone info after replacement
+    assert result.tzinfo is not None
+
+
+def test_parse_date_none_input():
+    """Test parsing None input."""
+    result = _parse_date(None)
+    assert result is None
+
+
+def test_parse_date_empty_string():
+    """Test parsing empty string."""
+    result = _parse_date("")
+    assert result is None
+
+
+def test_parse_date_malformed_string():
+    """Test parsing a malformed date string."""
+    result = _parse_date("not-a-date")
+    assert result is None
+
+
+def test_parse_date_invalid_date():
+    """Test parsing an invalid date like February 30."""
+    result = _parse_date("2024-02-30")
+    assert result is None
+
+
+def test_parse_date_partial_string():
+    """Test parsing a partial/incomplete date string."""
+    result = _parse_date("2024-01")
+    assert result is None
