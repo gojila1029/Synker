@@ -48,6 +48,13 @@ async def upload_files(
             )
             safe_relative = Path(relative_path).as_posix().lstrip("/")
 
+            # Security: stored path extension must also pass whitelist and match upload extension
+            stored_suffix = Path(safe_relative).suffix.lower()
+            if stored_suffix not in ALLOWED_EXTENSIONS or stored_suffix != suffix:
+                raise HTTPException(
+                    400, detail=f"File type not allowed in stored path: {stored_suffix}"
+                )
+
             # Security: reject traversal
             target = (user_upload_dir / safe_relative).resolve()
             if not str(target).startswith(str(user_upload_dir.resolve())):
