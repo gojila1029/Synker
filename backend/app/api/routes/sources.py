@@ -16,7 +16,6 @@ router = APIRouter()
 
 UPLOAD_ROOT = Path(__file__).parent.parent.parent / "uploads"
 MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB
-ALLOWED_EXTENSIONS = {".txt", ".md", ".pdf", ".doc", ".docx", ".docm"}
 
 
 @router.post("/upload")
@@ -39,27 +38,21 @@ async def upload_files(
             filename = file.filename or ""
             suffix = Path(filename).suffix.lower()
 
-            # Validate extension
-            if suffix not in ALLOWED_EXTENSIONS:
-                skipped_files.append(
-                    SkippedFile(filename=filename, reason=f"unsupported extension: {suffix}")
-                )
-                continue
-
             # Determine target path (preserve relative folder structure)
             relative_path = (
                 relative_paths[i] if i < len(relative_paths) else filename
             )
             safe_relative = Path(relative_path).as_posix().lstrip("/")
 
-            # Security: stored path extension must also pass whitelist and match upload extension
+            # Security: prevent extension replacement attacks
             stored_suffix = Path(safe_relative).suffix.lower()
-            if stored_suffix not in ALLOWED_EXTENSIONS or stored_suffix != suffix:
+            if stored_suffix != suffix:
+                reason = (
+                    f"extension mismatch: stored has {stored_suffix}, "
+                    f"file has {suffix}"
+                )
                 skipped_files.append(
-                    SkippedFile(
-                        filename=filename,
-                        reason=f"unsupported extension in stored path: {stored_suffix}",
-                    )
+                    SkippedFile(filename=filename, reason=reason)
                 )
                 continue
 

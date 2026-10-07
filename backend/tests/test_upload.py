@@ -71,16 +71,18 @@ async def test_upload_preserves_folder_structure(authed_client):
 
 
 @pytest.mark.contract
-async def test_upload_rejects_invalid_extension(authed_client):
-    """Upload with only invalid extension (.exe) returns 400 with skipped details."""
-    files = [("files", ("malware.exe", BytesIO(b"MZ\x90\x00"), "application/x-msdownload"))]
+async def test_upload_accepts_all_extensions(authed_client):
+    """Upload accepts all file extensions (including .exe) at upload time."""
+    files = [("files", ("program.exe", BytesIO(b"MZ\x90\x00"), "application/x-msdownload"))]
 
     response = await authed_client.post("/api/sources/upload", files=files)
 
-    assert response.status_code == 400
+    # All file types are now accepted at upload time (HTTP 200)
+    assert response.status_code == 200
     body = response.json()
-    # When all files are invalid, endpoint raises HTTPException with detail message
-    assert "No valid files to upload" in body["detail"]
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 1
+    assert "program.exe" in body["paths"][0]
 
 
 @pytest.mark.contract
@@ -238,8 +240,8 @@ async def test_upload_case_insensitive_extension_check(authed_client):
 
 
 @pytest.mark.contract
-async def test_upload_skips_invalid_files_uploads_valid_ones(authed_client):
-    """AC-001: Upload with mixed valid/invalid files skips invalid ones, uploads valid ones."""
+async def test_upload_accepts_all_file_types_mixed(authed_client):
+    """AC-001: Upload accepts all file types including unsupported ones at upload time."""
     files = [
         ("files", ("valid1.txt", BytesIO(b"text content"), "text/plain")),
         ("files", ("image.bmp", BytesIO(b"BMP"), "image/bmp")),
@@ -250,19 +252,19 @@ async def test_upload_skips_invalid_files_uploads_valid_ones(authed_client):
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "partial"
-    assert len(body["paths"]) == 2
+    # All files are accepted at upload time, so status is "success"
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 3
     assert "valid1.txt" in body["paths"][0]
-    assert "valid2.pdf" in body["paths"][1]
-    assert len(body["skipped"]) == 1
-    assert body["skipped"][0]["filename"] == "image.bmp"
-    assert "unsupported extension" in body["skipped"][0]["reason"]
-    assert "2 file(s) uploaded successfully, 1 skipped" in body["message"]
+    assert "image.bmp" in body["paths"][1]
+    assert "valid2.pdf" in body["paths"][2]
+    assert len(body["skipped"]) == 0
+    assert "3 file(s) uploaded successfully" in body["message"]
 
 
 @pytest.mark.contract
-async def test_upload_all_invalid_returns_400(authed_client):
-    """AC-002: Upload with only invalid files returns HTTP 400."""
+async def test_upload_accepts_all_unsupported_types(authed_client):
+    """Upload accepts all unsupported file types at upload time (HTTP 200)."""
     files = [
         ("files", ("program.exe", BytesIO(b"MZ"), "application/x-msdownload")),
         ("files", ("archive.zip", BytesIO(b"PK"), "application/zip")),
@@ -271,11 +273,14 @@ async def test_upload_all_invalid_returns_400(authed_client):
 
     response = await authed_client.post("/api/sources/upload", files=files)
 
-    assert response.status_code == 400
+    # All file types are accepted at upload time
+    assert response.status_code == 200
     body = response.json()
-    # HTTPException returns {"detail": "..."} not FileUploadResponse
-    assert "No valid files to upload" in body["detail"]
-    assert "3 file(s) were rejected" in body["detail"]
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 3
+    assert "program.exe" in body["paths"][0]
+    assert "archive.zip" in body["paths"][1]
+    assert "image.bmp" in body["paths"][2]
 
 
 @pytest.mark.contract
