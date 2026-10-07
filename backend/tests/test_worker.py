@@ -121,10 +121,9 @@ async def test_analysis_handler_with_no_sources():
 
 
 async def test_analysis_handler_preserves_real_error_on_failed_extraction(monkeypatch):
-    """Stage 6 verification-loop ROOT CAUSE #1/#3: a source with no title and
-    a failed extraction must not surface as a healthy-looking "Unknown"
-    candidate with a generic "Extraction pending" summary and a normal
-    0.75/0.70 score — that misrepresents a real failure as a good result."""
+    """OQ-001: When extraction fails, skip candidate creation entirely.
+    Source should be marked as 'failed' and extraction error logged.
+    Do not create a broken candidate."""
     import uuid as _uuid
 
     from app.adapters.base import ExtractedContent
@@ -147,17 +146,18 @@ async def test_analysis_handler_preserves_real_error_on_failed_extraction(monkey
 
     await handlers._analysis_handler({"user_id": user_id}, _noop_progress, pool)
 
+    # Verify: no candidates created when extraction fails
     inserts = [args for sql, args in conn.executed if "INSERT INTO candidates" in sql]
-    assert len(inserts) == 1
-    args = inserts[0]
-    title, summary, quality_score, confidence_score, recommendation = (
-        args[2], args[12], args[7], args[8], args[6],
-    )
-    assert title != "Unknown"
-    assert "Cannot extract video ID" in summary
-    assert quality_score == 0.0
-    assert confidence_score == 0.0
-    assert recommendation != "process"
+    assert len(inserts) == 0
+
+    # Verify: source was marked as failed
+    updates = [sql for sql, args in conn.executed if "UPDATE sources SET status='failed'" in sql]
+    assert len(updates) == 1
+
+    # Verify: extraction error was logged
+    logs = [sql for sql, args in conn.executed if "INSERT INTO processing_log" in sql]
+    assert len(logs) == 1
+    assert "extraction_failed" in logs[0]
 
 
 async def test_analysis_handler_skips_extraction_for_unsupported_discovery(monkeypatch):
