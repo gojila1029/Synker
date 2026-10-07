@@ -1,6 +1,8 @@
 """Handler tests for extraction failure scenarios (OQ-001)."""
 import json
+
 import pytest
+
 from app.adapters.base import ExtractedContent
 from app.worker import handlers
 
@@ -88,7 +90,11 @@ async def test_analysis_handler_skips_candidate_when_extraction_fails(monkeypatc
     assert "0 candidate(s) created" in result
 
     # Verify: source was marked as failed
-    executed_stmts = [stmt for stmt in conn.executed if "UPDATE sources SET status='failed'" in stmt[0]]
+    executed_stmts = [
+        stmt
+        for stmt in conn.executed
+        if "UPDATE sources SET status='failed'" in stmt[0]
+    ]
     assert len(executed_stmts) == 1
     assert executed_stmts[0][1] == ("src-1", "user-1")
 
