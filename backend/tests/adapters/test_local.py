@@ -1,9 +1,10 @@
 """Tests for the Local file source adapter."""
-import pytest
 from pathlib import Path
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock, patch
 
-from app.adapters.base import ExtractionError, ExtractedContent
+import pytest
+
+from app.adapters.base import ExtractedContent, ExtractionError
 from app.adapters.local import LocalAdapter
 
 
@@ -29,11 +30,16 @@ async def test_md_file(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_unsupported_extension_raises(tmp_path: Path):
+async def test_unsupported_extension_returns_error(tmp_path: Path):
+    """Unsupported file types return ExtractedContent with error field (not raise)."""
     f = tmp_path / "doc.docx"
     f.write_bytes(b"fake docx")
-    with pytest.raises(ExtractionError, match="Unsupported file type"):
-        await LocalAdapter().extract(str(f))
+    result = await LocalAdapter().extract(str(f))
+    assert result.error is not None
+    assert "not supported" in result.error.lower()
+    assert result.text == ""
+    assert result.title == "doc"
+    assert result.source_type == "local"
 
 
 @pytest.mark.asyncio
@@ -59,7 +65,11 @@ async def test_pdf_delegates_to_pdf_adapter(tmp_path: Path):
         source_type="pdf",
         word_count=2,
     )
-    with patch("app.adapters.pdf.PdfAdapter.extract", new_callable=AsyncMock, return_value=fake_result):
+    with patch(
+        "app.adapters.pdf.PdfAdapter.extract",
+        new_callable=AsyncMock,
+        return_value=fake_result,
+    ):
         result = await LocalAdapter().extract(str(f))
     assert result.text == "PDF content"
     assert result.source_type == "pdf"
@@ -81,6 +91,30 @@ async def test_empty_text_file(tmp_path: Path):
     result = await LocalAdapter().extract(str(f))
     assert result.text == ""
     assert result.word_count == 0
+
+
+@pytest.mark.asyncio
+async def test_unsupported_jpg_returns_error(tmp_path: Path):
+    """JPG files return ExtractedContent with error field."""
+    f = tmp_path / "image.jpg"
+    f.write_bytes(b"fake jpg")
+    result = await LocalAdapter().extract(str(f))
+    assert result.error is not None
+    assert "not supported" in result.error.lower()
+    assert result.text == ""
+    assert result.title == "image"
+
+
+@pytest.mark.asyncio
+async def test_unsupported_zip_returns_error(tmp_path: Path):
+    """ZIP files return ExtractedContent with error field."""
+    f = tmp_path / "archive.zip"
+    f.write_bytes(b"fake zip")
+    result = await LocalAdapter().extract(str(f))
+    assert result.error is not None
+    assert "not supported" in result.error.lower()
+    assert result.text == ""
+    assert result.title == "archive"
 
 
 @pytest.mark.asyncio

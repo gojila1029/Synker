@@ -71,34 +71,38 @@ async def test_upload_preserves_folder_structure(authed_client):
 
 
 @pytest.mark.contract
-async def test_upload_rejects_invalid_extension(authed_client):
-    """Upload with invalid extension (.exe) returns 400."""
-    files = [("files", ("malware.exe", BytesIO(b"MZ\x90\x00"), "application/x-msdownload"))]
+async def test_upload_accepts_all_extensions(authed_client):
+    """Upload accepts all file extensions (including .exe) at upload time."""
+    files = [("files", ("program.exe", BytesIO(b"MZ\x90\x00"), "application/x-msdownload"))]
 
     response = await authed_client.post("/api/sources/upload", files=files)
 
-    assert response.status_code == 400
+    # All file types are now accepted at upload time (HTTP 200)
+    assert response.status_code == 200
     body = response.json()
-    assert "File type not allowed" in body["detail"]
-    assert ".exe" in body["detail"]
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 1
+    assert "program.exe" in body["paths"][0]
 
 
 @pytest.mark.contract
 async def test_upload_rejects_path_traversal(authed_client):
-    """Upload with path traversal attempt (..) returns 400 regardless of which check fires."""
-    # Case 1: no-extension traversal — caught by extension check before traversal check
+    """Upload with path traversal attempt (..) is skipped and reported."""
+    # Case 1: no-extension traversal
     files = [("files", ("safe.txt", BytesIO(b"content"), "text/plain"))]
     data = {"relative_paths": ["../../../etc/passwd"]}
     response = await authed_client.post("/api/sources/upload", files=files, data=data)
+    # File is skipped due to traversal, so HTTP 400 (no valid files)
     assert response.status_code == 400
 
-    # Case 2: valid-extension traversal — caught by path traversal check
+    # Case 2: valid-extension traversal — caught by path traversal check, skipped
     files2 = [("files", ("safe.txt", BytesIO(b"content"), "text/plain"))]
     data2 = {"relative_paths": ["../../../escape.txt"]}
     response2 = await authed_client.post("/api/sources/upload", files=files2, data=data2)
     assert response2.status_code == 400
     body2 = response2.json()
-    assert "Path traversal" in body2["detail"]
+    # When all files are invalid/skipped, the response is an HTTPException detail
+    assert "No valid files to upload" in body2["detail"]
 
 
 @pytest.mark.contract
@@ -189,9 +193,11 @@ async def test_upload_response_schema_has_required_fields(authed_client):
     assert "uploadId" in body
     assert "paths" in body
     assert "message" in body
+    assert "skipped" in body
     assert body["status"] == "success"
     assert isinstance(body["paths"], list)
     assert isinstance(body["message"], str)
+    assert isinstance(body["skipped"], list)
 
 
 @pytest.mark.contract
@@ -231,3 +237,84 @@ async def test_upload_case_insensitive_extension_check(authed_client):
     assert response.status_code == 200
     body = response.json()
     assert len(body["paths"]) == 2
+
+
+@pytest.mark.contract
+async def test_upload_accepts_all_file_types_mixed(authed_client):
+    """AC-001: Upload accepts all file types including unsupported ones at upload time."""
+    files = [
+        ("files", ("valid1.txt", BytesIO(b"text content"), "text/plain")),
+        ("files", ("image.bmp", BytesIO(b"BMP"), "image/bmp")),
+        ("files", ("valid2.pdf", BytesIO(b"%PDF-1.4\ncontent"), "application/pdf")),
+    ]
+
+    response = await authed_client.post("/api/sources/upload", files=files)
+
+    assert response.status_code == 200
+    body = response.json()
+    # All files are accepted at upload time, so status is "success"
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 3
+    assert "valid1.txt" in body["paths"][0]
+    assert "image.bmp" in body["paths"][1]
+    assert "valid2.pdf" in body["paths"][2]
+    assert len(body["skipped"]) == 0
+    assert "3 file(s) uploaded successfully" in body["message"]
+
+
+@pytest.mark.contract
+async def test_upload_accepts_all_unsupported_types(authed_client):
+    """Upload accepts all unsupported file types at upload time (HTTP 200)."""
+    files = [
+        ("files", ("program.exe", BytesIO(b"MZ"), "application/x-msdownload")),
+        ("files", ("archive.zip", BytesIO(b"PK"), "application/zip")),
+        ("files", ("image.bmp", BytesIO(b"BMP"), "image/bmp")),
+    ]
+
+    response = await authed_client.post("/api/sources/upload", files=files)
+
+    # All file types are accepted at upload time
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 3
+    assert "program.exe" in body["paths"][0]
+    assert "archive.zip" in body["paths"][1]
+    assert "image.bmp" in body["paths"][2]
+
+
+@pytest.mark.contract
+async def test_upload_oversized_file_skipped(authed_client):
+    """AC-003: File exceeding 500 MB is skipped, valid files are uploaded."""
+    # Create a file that exceeds 500 MB (use a sparse representation for testing)
+    oversized_content = b"x" * (500 * 1024 * 1024 + 1)
+    files = [
+        ("files", ("valid.txt", BytesIO(b"small file"), "text/plain")),
+        ("files", ("huge.pdf", BytesIO(oversized_content), "application/pdf")),
+    ]
+
+    response = await authed_client.post("/api/sources/upload", files=files)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "partial"
+    assert len(body["paths"]) == 1
+    assert "valid.txt" in body["paths"][0]
+    assert len(body["skipped"]) == 1
+    assert body["skipped"][0]["filename"] == "huge.pdf"
+    assert "exceeds 500 MB" in body["skipped"][0]["reason"]
+
+
+@pytest.mark.contract
+async def test_upload_single_valid_file_success_status(authed_client):
+    """AC-004: Single valid file returns status='success' with empty skipped list."""
+    files = [("files", ("note.txt", BytesIO(b"content"), "text/plain"))]
+
+    response = await authed_client.post("/api/sources/upload", files=files)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "success"
+    assert len(body["paths"]) == 1
+    assert len(body.get("skipped", [])) == 0
+    assert "uploaded successfully" in body["message"]

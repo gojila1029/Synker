@@ -319,6 +319,19 @@ async def _discover_videos_for_source(
         except Exception as exc:
             video_extracted = ExtractedContent(text="", title="", error=str(exc))
 
+        # Skip video if extraction failed; log and continue to next video
+        if video_extracted and video_extracted.error and not video_extracted.text:
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    """INSERT INTO processing_log
+                       (user_id, entity_type, entity_id, action, details)
+                       VALUES ($1, 'source', $2, 'video_extraction_failed', $3::jsonb)""",
+                    user_id,
+                    source["id"],
+                    json.dumps({"video_url": video.url, "error": video_extracted.error}),
+                )
+            continue
+
         video_domain = urlparse(video.url).netloc if video.url else ""
         fields = _candidate_fields(video_extracted, video.title, video_domain)
 
@@ -665,6 +678,26 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                     extracted = ExtractedContent(text="", title="", error=str(exc))
 
                 domain = urlparse(source_url).netloc if source_url else ""
+
+                # If extraction failed (empty text + error set), mark source as failed
+                # and skip candidate creation. Do NOT create a broken candidate.
+                if extracted and extracted.error and not extracted.text:
+                    async with pool.acquire() as conn:
+                        await conn.execute(
+                            """INSERT INTO processing_log
+                               (user_id, entity_type, entity_id, action, details)
+                               VALUES ($1, 'source', $2, 'extraction_failed', $3::jsonb)""",
+                            user_id,
+                            source["id"],
+                            json.dumps({"error": extracted.error}),
+                        )
+                        await conn.execute(
+                            "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                            source["id"],
+                            user_id,
+                        )
+                    continue  # Skip candidate creation for failed sources
+
                 fields = _candidate_fields(extracted, source["title"], domain)
 
                 if await _create_candidate_with_evidence(
@@ -840,7 +873,25 @@ async def _note_gen_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
         await progress(40)
 
         if not evidence or not evidence["text"]:
-            raise NoEvidenceError("Source has not been extracted yet")
+            # Check if extraction failed; if so, provide the actual error reason
+            extraction_error = None
+            if source_id:
+                async with pool.acquire() as conn:
+                    log_row = await conn.fetchrow(
+                        """SELECT details FROM processing_log
+                           WHERE user_id=$1 AND entity_id=$2
+                           AND action IN ('extraction_failed', 'video_extraction_failed')
+                           ORDER BY created_at DESC LIMIT 1""",
+                        user_id,
+                        source_id,
+                    )
+                    if log_row and log_row["details"]:
+                        extraction_error = log_row["details"].get("error")
+
+            error_msg = "Source has not been extracted yet"
+            if extraction_error:
+                error_msg = f"Source extraction failed: {extraction_error}"
+            raise NoEvidenceError(error_msg)
 
         text = evidence["text"]
 

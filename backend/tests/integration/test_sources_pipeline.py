@@ -77,7 +77,7 @@ async def test_pdf_source_extracted_creates_candidate_with_evidence():
         source_type="pdf",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -87,25 +87,38 @@ async def test_pdf_source_extracted_creates_candidate_with_evidence():
         )
 
     # Verify result mentions candidates created
-    assert "candidate" in result.lower(), f"Unexpected result: {result}"
+    assert "1 candidate" in result, f"Expected 1 candidate, got: {result}"
 
-    # Verify async execute was called
+    # Verify async execute was called for candidate + source_extractions
     assert mock_conn.execute.called, "No database operations performed"
-    assert mock_conn.fetchval.called, "No dedup check performed"
+
+    # Verify candidate INSERT was called
+    candidate_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO candidates" in str(call)
+    ]
+    assert len(candidate_calls) >= 1, "Candidate should be created"
+
+    # Verify source_extractions INSERT was called
+    extraction_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO source_extractions" in str(call)
+    ]
+    assert len(extraction_calls) >= 1, "source_extractions should be persisted"
 
 
 # ─── AC-003: Encrypted PDF Error Handling ──────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_encrypted_pdf_creates_candidate_with_review_recommendation():
-    """AC-003: Encrypted PDF → candidate created with error in summary + 'review' recommendation.
+async def test_encrypted_pdf_skips_candidate_marks_source_failed():
+    """OQ-001: Encrypted PDF with extraction failure → skip candidate creation.
 
     GIVEN a PDF file is encrypted
     WHEN the Analysis job processes it
-    THEN a candidate is created with status='pending' and recommendation='review'
-    AND the summary contains the error message "PDF is encrypted"
-    AND no source_extractions row is created
+    THEN NO candidate is created
+    AND the source is marked as status='failed'
+    AND the error is logged in processing_log
     """
     user_id = "user-123"
     source_id = "pdf-source-encrypted"
@@ -138,41 +151,52 @@ async def test_encrypted_pdf_creates_candidate_with_review_recommendation():
         error="PDF is encrypted",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
-        await _analysis_handler(
+        result = await _analysis_handler(
             {"user_id": user_id, "job_type": "analysis"},
             progress,
             mock_pool,
         )
 
-    # Verify candidate was created
+    # Verify result indicates 0 candidates created
+    assert "0 candidate" in result, f"Expected 0 candidates, got: {result}"
+
+    # Verify NO candidate was created
     candidate_calls = [
         call for call in mock_conn.execute.call_args_list
         if "INSERT INTO candidates" in str(call)
     ]
-    assert len(candidate_calls) >= 1, "Candidate should be created even for encrypted PDF"
+    assert len(candidate_calls) == 0, "Candidate should NOT be created for extraction failure"
 
-    # Verify source_extractions was NOT created for error cases
-    extraction_calls = [
+    # Verify source was marked as failed
+    failed_updates = [
         call for call in mock_conn.execute.call_args_list
-        if "INSERT INTO source_extractions" in str(call)
+        if "UPDATE sources SET status='failed'" in str(call)
     ]
-    assert len(extraction_calls) == 0, "source_extractions should not be created for errors"
+    assert len(failed_updates) == 1, "Source should be marked as failed"
+
+    # Verify error was logged
+    log_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO processing_log" in str(call) and "extraction_failed" in str(call)
+    ]
+    assert len(log_calls) == 1, "Extraction error should be logged"
 
 
 # ─── AC-004: Empty PDF Error Handling ──────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_empty_pdf_creates_candidate_with_error_message():
-    """AC-004: Empty PDF → candidate created with error message in summary.
+async def test_empty_pdf_skips_candidate_marks_source_failed():
+    """OQ-001: Empty PDF with extraction failure → skip candidate creation.
 
     GIVEN a PDF contains no extractable text
     WHEN the Analysis job processes it
-    THEN a candidate is created
-    AND the summary contains "PDF contains no extractable text"
+    THEN NO candidate is created
+    AND the source is marked as status='failed'
+    AND the error is logged in processing_log
     """
     user_id = "user-123"
     source_id = "pdf-source-empty"
@@ -204,7 +228,7 @@ async def test_empty_pdf_creates_candidate_with_error_message():
         error="PDF contains no extractable text",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -213,12 +237,15 @@ async def test_empty_pdf_creates_candidate_with_error_message():
             mock_pool,
         )
 
-    assert "1 candidate" in result
+    # Verify result indicates 0 candidates created
+    assert "0 candidate" in result, f"Expected 0 candidates, got: {result}"
+
+    # Verify NO candidate was created for extraction failure
     candidate_calls = [
         c for c in mock_conn.execute.call_args_list
         if "INSERT INTO candidates" in str(c)
     ]
-    assert len(candidate_calls) >= 1
+    assert len(candidate_calls) == 0, "Candidate should NOT be created for extraction failure"
 
 
 # ─── AC-005 / AC-006: Local File Happy Path ────────────────────────────────────
@@ -265,7 +292,7 @@ async def test_local_file_extracted_creates_candidate_with_evidence():
         source_type="local",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -274,7 +301,7 @@ async def test_local_file_extracted_creates_candidate_with_evidence():
             mock_pool,
         )
 
-    assert "1 candidate" in result
+    assert "1 candidate" in result, f"Expected 1 candidate, got: {result}"
 
 
 # ─── AC-007: Path Traversal Rejection ──────────────────────────────────────────
@@ -287,8 +314,8 @@ async def test_path_traversal_attempt_creates_candidate_with_error():
     GIVEN a local file path contains ".."
     WHEN the Analysis job processes it
     THEN extraction fails with "Path traversal rejected"
-    AND a candidate is created with the error in summary
-    AND no source_extractions row is created
+    AND NO candidate is created (extraction failed, so skip candidate)
+    AND source is marked as failed
     """
     user_id = "user-123"
     source_id = "local-source-traversal"
@@ -322,28 +349,31 @@ async def test_path_traversal_attempt_creates_candidate_with_error():
         error="Path traversal rejected: ../../../../../../etc/passwd",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
-        await _analysis_handler(
+        result = await _analysis_handler(
             {"user_id": user_id, "job_type": "analysis"},
             progress,
             mock_pool,
         )
 
-    # Verify candidate was created with error
+    # Verify result shows 0 candidates (extraction failed, no candidate created)
+    assert "0 candidate" in result, f"Expected 0 candidates, got: {result}"
+
+    # Verify NO candidate was created (this is secure behavior — don't process bad paths)
     candidate_calls = [
         call for call in mock_conn.execute.call_args_list
         if "INSERT INTO candidates" in str(call)
     ]
-    assert len(candidate_calls) >= 1
+    assert len(candidate_calls) == 0, "No candidate should be created for path traversal attempt"
 
-    # Verify NO source_extractions was created
-    extraction_calls = [
+    # Verify source was marked as failed
+    failed_updates = [
         call for call in mock_conn.execute.call_args_list
-        if "INSERT INTO source_extractions" in str(call)
+        if "UPDATE sources SET status='failed'" in str(call)
     ]
-    assert len(extraction_calls) == 0
+    assert len(failed_updates) >= 1, "Source should be marked as failed"
 
 
 # ─── AC-008: Unsupported File Type ────────────────────────────────────────────
@@ -351,12 +381,13 @@ async def test_path_traversal_attempt_creates_candidate_with_error():
 
 @pytest.mark.asyncio
 async def test_unsupported_file_type_creates_candidate_with_error():
-    """AC-008: Unsupported file type (.docx) → error candidate created.
+    """AC-008: Unsupported file type (.docx) → extraction fails, no candidate created.
 
     GIVEN a local .docx or other unsupported file type
     WHEN the Analysis job processes it
     THEN extraction fails with "Unsupported file type"
-    AND a candidate is created with the error in summary
+    AND NO candidate is created (extraction failed)
+    AND source is marked as failed
     """
     user_id = "user-123"
     source_id = "local-source-docx"
@@ -388,7 +419,7 @@ async def test_unsupported_file_type_creates_candidate_with_error():
         error="Unsupported file type: '.docx'",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -397,7 +428,15 @@ async def test_unsupported_file_type_creates_candidate_with_error():
             mock_pool,
         )
 
-    assert "1 candidate" in result
+    # Extraction failed, so no candidate should be created
+    assert "0 candidate" in result, f"Expected 0 candidates for unsupported type, got: {result}"
+
+    # Verify NO candidate was created
+    candidate_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO candidates" in str(call)
+    ]
+    assert len(candidate_calls) == 0, "No candidate should be created for unsupported file type"
 
 
 # ─── AC-009 / AC-010: Web Happy Path ───────────────────────────────────────────
@@ -444,7 +483,7 @@ async def test_web_source_extracted_creates_candidate_with_evidence():
         source_type="web",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -453,7 +492,7 @@ async def test_web_source_extracted_creates_candidate_with_evidence():
             mock_pool,
         )
 
-    assert "1 candidate" in result
+    assert "1 candidate" in result, f"Expected 1 candidate, got: {result}"
 
 
 # ─── AC-011: Low Quality Web Content ────────────────────────────────────────────
@@ -463,9 +502,9 @@ async def test_web_source_extracted_creates_candidate_with_evidence():
 async def test_web_no_content_marks_low_quality():
     """AC-011: Web page with no content → candidate with '[low quality]' title.
 
-    GIVEN a web page returns no extractable content
+    GIVEN a web page returns no extractable content (but extraction succeeded)
     WHEN the Analysis job processes it
-    THEN the candidate title is prefixed with "[low quality]"
+    THEN a candidate is created with title "[low quality] Dynamic Page"
     AND summary is empty
     AND recommendation is "review"
     """
@@ -492,6 +531,7 @@ async def test_web_no_content_marks_low_quality():
     progress = AsyncMock()
 
     # trafilatura returns None for JS-heavy pages; adapter marks as [low quality]
+    # NO ERROR is set — extraction succeeded but found no content
     mock_extracted = ExtractedContent(
         text="",
         title="[low quality] Dynamic Page",
@@ -502,7 +542,7 @@ async def test_web_no_content_marks_low_quality():
         source_type="web",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -511,7 +551,8 @@ async def test_web_no_content_marks_low_quality():
             mock_pool,
         )
 
-    assert "1 candidate" in result
+    # Extraction succeeded (no error), even though text is empty, so candidate IS created
+    assert "1 candidate" in result, f"Expected 1 candidate for low-quality extraction, got: {result}"
 
 
 # ─── AC-012: HTTP Error Handling ───────────────────────────────────────────────
@@ -519,12 +560,13 @@ async def test_web_no_content_marks_low_quality():
 
 @pytest.mark.asyncio
 async def test_web_404_creates_candidate_with_http_error():
-    """AC-012: 404 or network error → candidate with HTTP status message.
+    """AC-012: 404 or network error → extraction fails, no candidate created.
 
     GIVEN a web URL returns 404 Not Found
     WHEN the Analysis job processes it
     THEN extraction fails with "HTTP 404 for <url>"
-    AND a candidate is created with the error in summary
+    AND NO candidate is created (extraction failed)
+    AND source is marked as failed
     """
     user_id = "user-123"
     source_id = "web-source-404"
@@ -556,7 +598,7 @@ async def test_web_404_creates_candidate_with_http_error():
         error="HTTP 404 for https://example.com/missing",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         result = await _analysis_handler(
@@ -565,7 +607,15 @@ async def test_web_404_creates_candidate_with_http_error():
             mock_pool,
         )
 
-    assert "1 candidate" in result
+    # Extraction failed (404), so no candidate should be created
+    assert "0 candidate" in result, f"Expected 0 candidates for HTTP 404, got: {result}"
+
+    # Verify NO candidate was created
+    candidate_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO candidates" in str(call)
+    ]
+    assert len(candidate_calls) == 0, "No candidate should be created for failed HTTP request"
 
 
 # ─── AC-013: Unified Pipeline ─────────────────────────────────────────────────
@@ -647,9 +697,7 @@ async def test_all_three_source_types_create_candidates():
         source_url="https://example.com",
     )
 
-    call_count = 0
     def mock_extract_side_effect(source_type, url):
-        nonlocal call_count
         if source_type == "pdf":
             return extracted_pdf
         elif source_type == "local":
@@ -658,7 +706,7 @@ async def test_all_three_source_types_create_candidates():
             return extracted_web
         return ExtractedContent(text="", title="", error="Unknown type")
 
-    with patch("app.adapters.extract") as mock_extract:
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.side_effect = mock_extract_side_effect
 
         result = await _analysis_handler(
@@ -668,7 +716,7 @@ async def test_all_three_source_types_create_candidates():
         )
 
     # Verify all sources were processed
-    assert "candidate" in result.lower() and "3" in result
+    assert "3 candidate" in result, f"Expected 3 candidates, got: {result}"
 
     # AC-015: Verify duplicate_score was computed for all candidate creations
     candidate_calls = [

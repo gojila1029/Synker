@@ -1,6 +1,7 @@
 """Local file source adapter.
 
 Reads .txt and .md files directly; delegates .pdf to PdfAdapter.
+Gracefully handles unsupported file types by returning ExtractedContent with error field.
 Enforces path traversal safety (rejects paths containing ..).
 """
 
@@ -28,7 +29,13 @@ class LocalAdapter(SourceAdapter):
 
         suffix = path.suffix.lower()
         if suffix not in _SUPPORTED:
-            raise ExtractionError(f"Unsupported file type: {suffix!r}")
+            return ExtractedContent(
+                source_url=url,
+                text="",
+                title=path.stem,
+                source_type="local",
+                error=f"File type {suffix!r} is not supported for text extraction",
+            )
 
         if suffix == ".pdf":
             from app.adapters.pdf import PdfAdapter
