@@ -137,7 +137,13 @@ export const api = {
       const formData = new FormData();
       files.forEach(f => formData.append("files", f));
       relativePaths.forEach(p => formData.append("relative_paths", p));
-      return UPLOAD<{ status: string; uploadId: string; paths: string[]; message: string }>(
+      return UPLOAD<{
+        status: string;
+        uploadId: string;
+        paths: string[];
+        skipped?: { filename: string; reason: string }[];
+        message: string;
+      }>(
         "/api/sources/upload", formData
       );
     },

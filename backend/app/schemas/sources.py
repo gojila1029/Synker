@@ -52,8 +52,14 @@ class SourceCreate(CamelModel):
         return self
 
 
+class SkippedFile(CamelModel):
+    filename: str
+    reason: str
+
+
 class FileUploadResponse(CamelModel):
-    status: str
+    status: Literal["success", "partial", "error"]
     upload_id: str
     paths: list[str]
+    skipped: list[SkippedFile] = []
     message: str

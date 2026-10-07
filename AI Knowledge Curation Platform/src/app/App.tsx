@@ -594,8 +594,16 @@ function SourcesScreen() {
       if (localFiles.length > 0) {
         setLocalFolderUploading(true);
         const res = await api.sources.upload(localFiles, localRelPaths, "local");
-        urlToSave = res.paths[0] ?? res.paths[0];
+        urlToSave = res.paths[0];
         setLocalFolderUploading(false);
+
+        // Show skipped files if any
+        if (res.skipped && res.skipped.length > 0) {
+          const skippedText = res.skipped
+            .map((f: { filename: string; reason: string }) => `${f.filename}: ${f.reason}`)
+            .join("; ");
+          toast.info(`${res.paths.length} file(s) uploaded, ${res.skipped.length} skipped: ${skippedText}`);
+        }
       }
       if (!urlToSave) return;
       await api.sources.add({
@@ -638,6 +646,14 @@ function SourcesScreen() {
         const res = await api.sources.upload([selectedPdfFile], [selectedPdfFile.name], "pdf");
         urlToSave = res.paths[0];
         setPdfUploading(false);
+
+        // Show skipped files if any
+        if (res.skipped && res.skipped.length > 0) {
+          const skippedText = res.skipped
+            .map((f: { filename: string; reason: string }) => `${f.filename}: ${f.reason}`)
+            .join("; ");
+          toast.info(`${res.paths.length} file(s) uploaded, ${res.skipped.length} skipped: ${skippedText}`);
+        }
       }
       await api.sources.add({
         type: "pdf",
