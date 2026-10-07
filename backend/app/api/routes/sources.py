@@ -1,6 +1,6 @@
 ﻿import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import asyncpg
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -8,7 +8,7 @@ from fastapi.responses import Response
 
 from app.adapters.classify import classify_source_scope
 from app.api.deps import get_current_user, get_db
-from app.schemas.sources import FileUploadResponse, SourceCreate
+from app.schemas.sources import FileUploadResponse, SkippedFile, SourceCreate
 
 router = APIRouter()
 
@@ -32,15 +32,19 @@ async def upload_files(
     user_upload_dir.mkdir(parents=True, exist_ok=True)
 
     stored_paths: list[str] = []
+    skipped_files: list[SkippedFile] = []
+
     try:
         for i, file in enumerate(files):
-            # Validate extension
             filename = file.filename or ""
             suffix = Path(filename).suffix.lower()
+
+            # Validate extension
             if suffix not in ALLOWED_EXTENSIONS:
-                raise HTTPException(
-                    400, detail=f"File type not allowed: {suffix}"
+                skipped_files.append(
+                    SkippedFile(filename=filename, reason=f"unsupported extension: {suffix}")
                 )
+                continue
 
             # Determine target path (preserve relative folder structure)
             relative_path = (
@@ -51,40 +55,62 @@ async def upload_files(
             # Security: stored path extension must also pass whitelist and match upload extension
             stored_suffix = Path(safe_relative).suffix.lower()
             if stored_suffix not in ALLOWED_EXTENSIONS or stored_suffix != suffix:
-                raise HTTPException(
-                    400, detail=f"File type not allowed in stored path: {stored_suffix}"
+                skipped_files.append(
+                    SkippedFile(
+                        filename=filename,
+                        reason=f"unsupported extension in stored path: {stored_suffix}",
+                    )
                 )
+                continue
 
             # Security: reject traversal
             target = (user_upload_dir / safe_relative).resolve()
             if not str(target).startswith(str(user_upload_dir.resolve())):
-                raise HTTPException(400, detail="Path traversal rejected")
+                skipped_files.append(
+                    SkippedFile(filename=filename, reason="path traversal rejected")
+                )
+                continue
 
             target.parent.mkdir(parents=True, exist_ok=True)
 
             # Read and validate size
             content = await file.read()
             if len(content) > MAX_FILE_SIZE:
-                raise HTTPException(
-                    400,
-                    detail=f"File size exceeds 500 MB: {filename}",
+                skipped_files.append(
+                    SkippedFile(filename=filename, reason="file size exceeds 500 MB")
                 )
+                continue
 
             target.write_bytes(content)
             stored_paths.append(str(target))
-    except HTTPException:
-        raise
+
     except Exception as e:
         import shutil
 
         shutil.rmtree(user_upload_dir, ignore_errors=True)
         raise HTTPException(500, detail=f"Upload failed: {str(e)}")
 
+    # If no valid files, return HTTP 400
+    if not stored_paths:
+        if skipped_files:
+            raise HTTPException(
+                400,
+                detail=f"No valid files to upload. All {len(skipped_files)} file(s) were rejected.",
+            )
+        raise HTTPException(400, detail="No files provided")
+
+    # Determine status: success if all valid, partial if some skipped
+    status: Literal["success", "partial"] = "partial" if skipped_files else "success"
+    message = f"{len(stored_paths)} file(s) uploaded successfully"
+    if skipped_files:
+        message += f", {len(skipped_files)} skipped"
+
     return FileUploadResponse(
-        status="success",
+        status=status,
         upload_id=upload_id,
         paths=stored_paths,
-        message=f"{len(stored_paths)} file(s) uploaded successfully",
+        skipped=skipped_files,
+        message=message,
     )
 
 
