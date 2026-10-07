@@ -594,7 +594,7 @@ function SourcesScreen() {
       if (localFiles.length > 0) {
         setLocalFolderUploading(true);
         const res = await api.sources.upload(localFiles, localRelPaths, "local");
-        urlToSave = res.paths[0] ?? res.paths[0];
+        urlToSave = res.paths[0];
         setLocalFolderUploading(false);
       }
       if (!urlToSave) return;
