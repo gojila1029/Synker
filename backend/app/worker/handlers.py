@@ -679,38 +679,81 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
 
                 domain = urlparse(source_url).netloc if source_url else ""
 
-                # If extraction failed (empty text + error set), mark source as failed
-                # and skip candidate creation. Do NOT create a broken candidate.
-                if extracted and extracted.error and not extracted.text:
+                # Handle both single ExtractedContent and list[ExtractedContent]
+                # (folders return lists; files return single)
+                if isinstance(extracted, list):
+                    # Folder extraction: process each file result
+                    folder_created = 0
+                    for item in extracted:
+                        # Skip items with no text AND an error (unsupported files)
+                        if item.error and not item.text:
+                            async with pool.acquire() as conn:
+                                await conn.execute(
+                                    """INSERT INTO processing_log
+                                       (user_id, entity_type, entity_id, action, details)
+                                       VALUES ($1, 'source', $2, 'file_skipped', $3::jsonb)""",
+                                    user_id,
+                                    source["id"],
+                                    json.dumps({
+                                        "file_path": item.source_url,
+                                        "error": item.error,
+                                    }),
+                                )
+                            continue
+
+                        fields = _candidate_fields(item, source["title"], domain)
+                        if await _create_candidate_with_evidence(
+                            pool,
+                            user_id,
+                            source["id"],
+                            item.source_url,
+                            domain,
+                            fields,
+                            item,
+                        ):
+                            folder_created += 1
+                            created += 1
+
                     async with pool.acquire() as conn:
                         await conn.execute(
-                            """INSERT INTO processing_log
-                               (user_id, entity_type, entity_id, action, details)
-                               VALUES ($1, 'source', $2, 'extraction_failed', $3::jsonb)""",
-                            user_id,
+                            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
                             source["id"],
-                            json.dumps({"error": extracted.error}),
+                            user_id,
                         )
+                else:
+                    # Single file extraction (backward compat)
+                    # If extraction failed (empty text + error set), mark source as failed
+                    # and skip candidate creation. Do NOT create a broken candidate.
+                    if extracted and extracted.error and not extracted.text:
+                        async with pool.acquire() as conn:
+                            await conn.execute(
+                                """INSERT INTO processing_log
+                                   (user_id, entity_type, entity_id, action, details)
+                                   VALUES ($1, 'source', $2, 'extraction_failed', $3::jsonb)""",
+                                user_id,
+                                source["id"],
+                                json.dumps({"error": extracted.error}),
+                            )
+                            await conn.execute(
+                                "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                                source["id"],
+                                user_id,
+                            )
+                        continue  # Skip candidate creation for failed sources
+
+                    fields = _candidate_fields(extracted, source["title"], domain)
+
+                    if await _create_candidate_with_evidence(
+                        pool, user_id, source["id"], source_url, domain, fields, extracted
+                    ):
+                        created += 1
+
+                    async with pool.acquire() as conn:
                         await conn.execute(
-                            "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
                             source["id"],
                             user_id,
                         )
-                    continue  # Skip candidate creation for failed sources
-
-                fields = _candidate_fields(extracted, source["title"], domain)
-
-                if await _create_candidate_with_evidence(
-                    pool, user_id, source["id"], source_url, domain, fields, extracted
-                ):
-                    created += 1
-
-                async with pool.acquire() as conn:
-                    await conn.execute(
-                        "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
-                        source["id"],
-                        user_id,
-                    )
             except Exception:
                 pass
 
