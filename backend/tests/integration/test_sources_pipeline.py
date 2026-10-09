@@ -878,3 +878,155 @@ def test_candidate_fields_empty_extraction() -> None:
     assert fields["recommendation"] == "process"
     assert fields["summary"] == ""
     assert fields["word_count"] == 0
+
+
+# ─── Folder Source Integration Tests (AC-002 through AC-009) ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_folder_source_creates_multiple_candidates():
+    """AC-003 + AC-004: Folder source creates one candidate per supported file.
+
+    GIVEN a folder source with multiple supported files
+    WHEN _analysis_handler processes it
+    THEN each supported file gets a candidate
+    """
+    user_id = "user-123"
+    source_id = "folder-source-1"
+
+    mock_conn = AsyncMock()
+    mock_pool = Mock()
+    mock_pool.acquire = Mock(return_value=AsyncContextManagerMock(mock_conn))
+
+    folder_source = {
+        "id": source_id,
+        "type": "local",
+        "title": "ABAP Folder",
+        "url": "/path/to/ABAP",
+        "source_scope": "direct_resource",
+        "discovery_mode": None,
+        "keyword": None,
+        "discovery_limit": 25,
+    }
+    mock_conn.fetch.return_value = [folder_source]
+    mock_conn.fetchval.return_value = None
+
+    progress = AsyncMock()
+
+    # Simulate folder extraction returning list of 3 files
+    file1 = ExtractedContent(
+        text="Slides content",
+        title="Slides",
+        source_url="/path/to/ABAP/slides.pdf",
+        source_type="pdf",
+        word_count=10,
+    )
+    file2 = ExtractedContent(
+        text="Introduction text",
+        title="Introduction",
+        source_url="/path/to/ABAP/intro.txt",
+        source_type="local",
+        word_count=5,
+    )
+    file3 = ExtractedContent(
+        text="",
+        title="Document",
+        source_url="/path/to/ABAP/doc.docx",
+        source_type="local",
+        error="File type '.docx' is not supported",
+    )
+
+    extracted_list = [file1, file2, file3]
+
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
+        mock_extract.return_value = extracted_list
+
+        result = await _analysis_handler(
+            {"user_id": user_id, "job_type": "analysis"},
+            progress,
+            mock_pool,
+        )
+
+    # Should create candidates for file1 and file2 (file3 is unsupported)
+    assert "2 candidate" in result, f"Expected 2 candidates (3 files - 1 unsupported), got: {result}"
+
+    # Verify 2 candidate INSERTs
+    candidate_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO candidates" in str(call)
+    ]
+    assert len(candidate_calls) >= 2, "Should create 2 candidates (1 PDF + 1 TXT)"
+
+    # Verify unsupported file was logged
+    log_calls = [
+        call for call in mock_conn.execute.call_args_list
+        if "INSERT INTO processing_log" in str(call) and "file_skipped" in str(call)
+    ]
+    assert len(log_calls) >= 1, "Unsupported file should be logged as skipped"
+
+
+@pytest.mark.asyncio
+async def test_folder_source_idempotent_on_rerun():
+    """AC-007: Folder rerun does not create duplicate candidates.
+
+    GIVEN a folder source has been processed once
+    WHEN the same folder is processed again
+    THEN each file's candidate is checked by source_url before inserting
+    AND no duplicates are created
+    """
+    user_id = "user-123"
+    source_id = "folder-source-2"
+
+    mock_conn = AsyncMock()
+    mock_pool = Mock()
+    mock_pool.acquire = Mock(return_value=AsyncContextManagerMock(mock_conn))
+
+    folder_source = {
+        "id": source_id,
+        "type": "local",
+        "title": "Data Folder",
+        "url": "/path/to/data",
+        "source_scope": "direct_resource",
+        "discovery_mode": None,
+        "keyword": None,
+        "discovery_limit": 25,
+    }
+    mock_conn.fetch.return_value = [folder_source]
+
+    # First call: no existing candidate
+    # Second call: candidate exists
+    mock_conn.fetchval.side_effect = [None, 1]
+
+    progress = AsyncMock()
+
+    file1 = ExtractedContent(
+        text="Data",
+        title="DataFile",
+        source_url="/path/to/data/file.txt",
+        source_type="local",
+        word_count=1,
+    )
+
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
+        mock_extract.return_value = [file1]
+
+        # First run
+        result1 = await _analysis_handler(
+            {"user_id": user_id, "job_type": "analysis"},
+            progress,
+            mock_pool,
+        )
+
+        # Reset mock for second run
+        mock_conn.reset_mock()
+        mock_conn.fetchval.side_effect = [1]  # Candidate already exists
+
+        result2 = await _analysis_handler(
+            {"user_id": user_id, "job_type": "analysis"},
+            progress,
+            mock_pool,
+        )
+
+    # Second run should find existing candidate and skip creating a duplicate
+    assert "0 candidate" in result2, \
+        f"Second run should create 0 new candidates (already exists), got: {result2}"
