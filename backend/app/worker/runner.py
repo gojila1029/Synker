@@ -185,10 +185,9 @@ async def reaper_loop(stop: asyncio.Event, pool: Any | None = None) -> None:
 
 async def scheduler_loop(stop: asyncio.Event, pool: Any | None = None) -> None:
     """Auto-create Analysis jobs for users who have queued sources but no
-    pending or running Analysis job. Re-queues done/processing sources so the
-    scheduler fires even after all sources are processed. Runs every
-    worker_poll_seconds * 10 seconds so the default 10-minute cadence is
-    approximated without a separate config setting."""
+    pending or running Analysis job. Runs every worker_poll_seconds * 10
+    seconds so the default 10-minute cadence is approximated without a
+    separate config setting."""
     pool = pool or await get_pool()
     interval = settings.worker_poll_seconds * 10
     _log.info("Scheduler loop started (interval=%.0fs)", interval)
@@ -196,8 +195,7 @@ async def scheduler_loop(stop: asyncio.Event, pool: Any | None = None) -> None:
         try:
             async with pool.acquire() as conn:
                 users = await conn.fetch(
-                    "SELECT DISTINCT user_id FROM sources "
-                    "WHERE status IN ('queued', 'done', 'processing')"
+                    "SELECT DISTINCT user_id FROM sources WHERE status = 'queued'"
                 )
                 for row in users:
                     uid = row["user_id"]
@@ -210,21 +208,6 @@ async def scheduler_loop(stop: asyncio.Event, pool: Any | None = None) -> None:
                         uid,
                     )
                     if already:
-                        continue
-                    # Re-queue done/processing sources for this user so the Analysis
-                    # handler can process them again.
-                    await conn.execute(
-                        "UPDATE sources SET status='queued', updated_at=now() "
-                        "WHERE user_id=$1 AND status IN ('done', 'processing')",
-                        uid,
-                    )
-                    # Verify there are actually queued sources before creating job.
-                    # All sources may be failed — don't create job if nothing to process.
-                    queued = await conn.fetchval(
-                        "SELECT COUNT(*) FROM sources WHERE user_id=$1 AND status='queued'",
-                        uid,
-                    )
-                    if not queued:
                         continue
                     job_row = await conn.fetchrow(
                         """INSERT INTO jobs (user_id, source_title, type)
