@@ -720,7 +720,9 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                             created += 1
 
                     # If all files in folder failed, mark source as failed and skip final override
-                    if len(extracted) > 0 and failed_count == len(extracted) and folder_created == 0:
+                    if (len(extracted) > 0
+                            and failed_count == len(extracted)
+                            and folder_created == 0):
                         async with pool.acquire() as conn:
                             await conn.execute(
                                 """INSERT INTO processing_log
