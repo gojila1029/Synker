@@ -219,7 +219,10 @@ async def _create_candidate_with_evidence(
     do that later. Returns True if a new candidate was created."""
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
-            "SELECT 1 FROM candidates WHERE user_id=$1 AND source_info=$2 LIMIT 1",
+            """SELECT 1 FROM candidates
+               WHERE user_id=$1 AND source_info=$2
+               AND status IN ('pending', 'approved')
+               LIMIT 1""",
             user_id,
             source_url,
         )
