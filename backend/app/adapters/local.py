@@ -93,12 +93,13 @@ class LocalAdapter(SourceAdapter):
             except Exception as exc:
                 _log.warning("Video extraction failed for %s: %s", path, exc)
 
+        # No transcription available — create a minimal candidate so the user
+        # can see the video was found and decide whether to approve or reject it.
         return ExtractedContent(
             source_url=str(path),
-            text="",
+            text=f"[Video file — automatic transcription is not available. Title: {path.stem}]",
             title=path.stem,
             source_type="local",
-            error="Video transcription adapter not available",
         )
 
     async def _extract_folder(self, folder_path: Path) -> list[ExtractedContent]:
