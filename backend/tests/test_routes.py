@@ -190,6 +190,96 @@ async def test_post_scheduler_trigger_returns_200_when_source_exists(authed_clie
     assert response.json()["jobId"] is not None
 
 
+async def test_trigger_discovery_requeues_done_sources():
+    """Verify that POST /api/scheduler/trigger re-queues done/processing sources.
+
+    This test ensures that when discovery is triggered, sources with status
+    'done' or 'processing' are reset to 'queued' before the Analysis job is
+    created. This allows the scheduler to re-analyze sources on each trigger.
+
+    Root cause: Without re-queuing, sources would remain 'done' and the
+    Analysis handler would find zero queued sources, producing zero candidates.
+    """
+    from httpx import ASGITransport, AsyncClient
+    from app.api.deps import get_current_user, get_db
+    from app.main import app
+    from tests.conftest import MOCK_USER
+    import uuid as _uuid
+
+    # Track all execute() and fetchrow() calls to verify the UPDATE was made
+    executed_queries: list[tuple[str, tuple]] = []
+    fetched_queries: list[tuple[str, tuple]] = []
+
+    class MockConnTracker:
+        async def fetchval(self, query: str, *args, **kwargs) -> int | None:  # type: ignore[override]
+            if "sources" in query.lower() and "count" in query.lower():
+                return 1
+            return None
+
+        async def fetchrow(self, query: str, *args, **kwargs) -> dict | None:  # type: ignore[override]
+            fetched_queries.append((query, args))
+            if "INSERT INTO jobs" in query:
+                return {"id": _uuid.UUID("00000000-0000-0000-0000-000000000099")}
+            return None
+
+        async def execute(self, query: str, *args, **kwargs) -> None:  # type: ignore[override]
+            executed_queries.append((query, args))
+
+    async def _mock_get_db_tracker():
+        yield MockConnTracker()
+
+    app.dependency_overrides[get_current_user] = lambda: MOCK_USER
+    app.dependency_overrides[get_db] = _mock_get_db_tracker
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            response = await ac.post("/api/scheduler/trigger")
+
+        # Verify response is successful
+        assert response.status_code == 200
+        assert response.json()["triggered"] is True
+
+        # Verify the UPDATE query was executed to re-queue done/processing sources
+        update_queries = [
+            (query, args)
+            for query, args in executed_queries
+            if "UPDATE sources" in query and "queued" in query
+        ]
+        assert len(update_queries) == 1, (
+            f"Expected exactly one UPDATE sources query, "
+            f"got {len(update_queries)}. Executed queries: {executed_queries}"
+        )
+
+        query, args = update_queries[0]
+        assert "status IN ('done', 'processing')" in query, (
+            f"UPDATE query must check for 'done' or 'processing' status. Got: {query}"
+        )
+        assert "status='queued'" in query, (
+            f"UPDATE query must set status='queued'. Got: {query}"
+        )
+        assert len(args) >= 1, (
+            f"UPDATE query must have at least the user_id parameter. Got: {args}"
+        )
+        # Verify the user_id is passed (should be MOCK_USER's sub)
+        assert str(args[0]) == MOCK_USER["sub"], (
+            f"UPDATE query must use the current user's ID. "
+            f"Got {args[0]}, expected {MOCK_USER['sub']}"
+        )
+
+        # Verify INSERT INTO jobs was called via fetchrow
+        insert_job_queries = [
+            (query, args)
+            for query, args in fetched_queries
+            if "INSERT INTO jobs" in query
+        ]
+        assert len(insert_job_queries) >= 1, (
+            "Expected at least one INSERT INTO jobs query (via fetchrow). "
+            f"Fetched queries: {fetched_queries}"
+        )
+
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ── Auth guard ────────────────────────────────────────────────────────────────
 
 async def test_protected_routes_reject_unauthenticated(client):
