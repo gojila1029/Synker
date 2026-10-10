@@ -20,7 +20,7 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy backend to staging
-        run: railway up --service adaptable-charm --environment staging --detach
+        run: railway up --service adaptable-charm --environment staging --project 4c4a8694-f006-41f5-90c6-eadfdeadecb6 --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
 
@@ -34,6 +34,6 @@ jobs:
         run: npm install -g @railway/cli
 
       - name: Deploy frontend to staging
-        run: railway up --service synker-frontend --environment staging --detach
+        run: railway up --service synker-frontend --environment staging --project 4c4a8694-f006-41f5-90c6-eadfdeadecb6 --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
