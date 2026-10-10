@@ -200,11 +200,14 @@ async def test_trigger_discovery_requeues_done_sources():
     Root cause: Without re-queuing, sources would remain 'done' and the
     Analysis handler would find zero queued sources, producing zero candidates.
     """
+    import uuid as _uuid
+    from contextlib import asynccontextmanager
+
     from httpx import ASGITransport, AsyncClient
+
     from app.api.deps import get_current_user, get_db
     from app.main import app
     from tests.conftest import MOCK_USER
-    import uuid as _uuid
 
     # Track all execute() and fetchrow() calls to verify the UPDATE was made
     executed_queries: list[tuple[str, tuple]] = []
@@ -224,6 +227,11 @@ async def test_trigger_discovery_requeues_done_sources():
 
         async def execute(self, query: str, *args, **kwargs) -> None:  # type: ignore[override]
             executed_queries.append((query, args))
+
+        @asynccontextmanager
+        async def transaction(self):  # type: ignore[override]
+            """Mock transaction context manager — passes through."""
+            yield
 
     async def _mock_get_db_tracker():
         yield MockConnTracker()
