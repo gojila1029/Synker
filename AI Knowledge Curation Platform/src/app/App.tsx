@@ -594,7 +594,10 @@ function SourcesScreen() {
       if (localFiles.length > 0) {
         setLocalFolderUploading(true);
         const res = await api.sources.upload(localFiles, localRelPaths, "local");
-        urlToSave = res.paths[0];
+        // Use upload directory so LocalAdapter processes all files, not just the first.
+        const firstPath = res.paths[0] ?? "";
+        const uploadDir = firstPath.substring(0, firstPath.lastIndexOf("/"));
+        urlToSave = uploadDir || firstPath;
         setLocalFolderUploading(false);
 
         // Show skipped files if any
@@ -610,8 +613,6 @@ function SourcesScreen() {
         type: "local",
         url: urlToSave,
         topicId: localFolderTopic || null,
-        discovery_mode: "single",
-        discovery_limit: 1,
       });
       toast.success("Local folder source added");
       setLocalFiles([]);
