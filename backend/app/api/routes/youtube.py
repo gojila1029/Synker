@@ -146,8 +146,8 @@ async def create_notes_batch(
     2. Extract video ID
     3. Create source (if not exists)
     4. Extract content via adapter
-    5. Create candidate with status=approved (auto-approve for Track B only)
-    6. Enqueue NoteGen job
+    5. Create candidate with status=pending (respects Approval tab workflow)
+    6. User must explicitly approve in Approval tab to trigger note generation
 
     Returns per-item status (200 with partial failures acceptable).
     """
@@ -237,7 +237,7 @@ async def create_notes_batch(
             domain = urlparse(url).netloc if url else "youtube.com"
             fields = _candidate_fields(extracted, f"YouTube video {video_id}", domain)
 
-            # Create candidate with status=approved (Track B auto-approves)
+            # Create candidate with status=pending (Track B now respects Approval tab)
             # db is already a Connection from get_db; use directly (no acquire)
             pool = await get_pool()
             dup_score = await _compute_candidate_similarity(
@@ -271,7 +271,7 @@ async def create_notes_batch(
                     max(1000, fields["word_count"] * 2),
                     fields["summary"],
                     [],
-                    "approved",  # Track B auto-approves
+                    "pending",  # Track B respects Approval tab workflow
                 )
                 candidate_id = candidate_row["id"] if candidate_row else None
 
@@ -298,20 +298,8 @@ async def create_notes_batch(
                         extracted.word_count,
                     )
 
-                # Enqueue NoteGen job
-                if candidate_id:
-                    job_id = uuid.uuid4()
-                    await conn.execute(
-                        """INSERT INTO jobs
-                           (id, user_id, type, source_id, candidate_id, status)
-                           VALUES ($1, $2, $3, $4, $5, $6)""",
-                        job_id,
-                        user_uuid,
-                        "Note Gen",
-                        source_id,
-                        candidate_id,
-                        "queued",
-                    )
+                # Note Gen jobs are now queued only upon explicit user approval
+                # via the /api/candidates/approve endpoint (see candidates.py)
 
             results.append(
                 BatchNoteItem(
