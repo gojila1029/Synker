@@ -210,18 +210,18 @@ async def _create_candidate_with_evidence(
     fields: dict[str, Any],
     extracted: ExtractedContent | None,
 ) -> bool:
-    """Insert a candidate row, deduped against ANY existing candidate for
-    this source_url regardless of status — an approved or rejected
-    candidate must never be silently recreated just because it is no
-    longer 'pending'. Also persists the extraction as Evidence
-    (source_extractions) when it actually succeeded, since no job type
-    anywhere in this codebase ever enqueues a separate "Extraction" job to
-    do that later. Returns True if a new candidate was created."""
+    """Insert a candidate row, deduped against pending candidates only.
+    Approved candidates may be re-discovered via explicit Run Discovery Now,
+    while rejected candidates allow re-discovery. Pending duplicates are
+    always blocked. Also persists the extraction as Evidence (source_extractions)
+    when it actually succeeded, since no job type anywhere in this codebase
+    ever enqueues a separate "Extraction" job to do that later. Returns True
+    if a new candidate was created."""
     async with pool.acquire() as conn:
         existing = await conn.fetchval(
             """SELECT 1 FROM candidates
                WHERE user_id=$1 AND source_info=$2
-               AND status IN ('pending', 'approved')
+               AND status = 'pending'
                LIMIT 1""",
             user_id,
             source_url,

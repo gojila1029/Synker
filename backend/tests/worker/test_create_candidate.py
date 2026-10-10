@@ -2,14 +2,15 @@
 
 Tests verify:
 - Pending candidates block duplicate creation
-- Approved candidates block duplicate creation
-- Rejected candidates DO NOT block re-discovery (new behavior after the fix)
+- Approved candidates DO NOT block re-discovery (new behavior after the fix)
+- Rejected candidates DO NOT block re-discovery
 - New candidates are inserted with correct fields
 - Evidence (source_extractions) is persisted when extraction succeeds
 - Evidence is not persisted when extraction has errors
 - Function returns True on new candidate, False on dedup hit
 """
 from unittest.mock import AsyncMock, Mock, patch
+
 import pytest
 
 from app.adapters.base import ExtractedContent
@@ -63,8 +64,13 @@ async def test_create_candidate_pending_candidate_blocks_dedup():
 
 
 @pytest.mark.asyncio
-async def test_create_candidate_approved_candidate_blocks_dedup():
-    """Approved candidates block duplicate creation."""
+async def test_create_candidate_approved_candidate_allows_rediscovery():
+    """FIXED: Approved candidates DO NOT block re-discovery.
+
+    After the fix, approved candidates are allowed to be re-discovered
+    when the user explicitly triggers discovery again (e.g., Run Discovery Now).
+    The dedup query now only checks for pending status, not approved.
+    """
     user_id = "user-123"
     source_url = "https://example.com/article"
 
@@ -72,27 +78,36 @@ async def test_create_candidate_approved_candidate_blocks_dedup():
     mock_pool = Mock()
     mock_pool.acquire = Mock(return_value=AsyncContextManagerMock(mock_conn))
 
-    # Mock: existing approved candidate found
-    mock_conn.fetchval.return_value = 1
+    # Mock: NO existing pending candidate found
+    # (the approved one is filtered out by the new query: status = 'pending' only)
+    mock_conn.fetchval.return_value = None
 
-    fields = {
-        "title": "Test Article",
-        "published_at": "2024-01-01",
-        "recommendation": "high",
-        "quality_score": 0.8,
-        "confidence_score": 0.9,
-        "summary": "A test article",
-        "word_count": 100,
-    }
+    with patch(
+        "app.worker.handlers._compute_candidate_similarity", new_callable=AsyncMock
+    ) as mock_similarity:
+        mock_similarity.return_value = 0.2
 
-    result = await _create_candidate_with_evidence(
-        mock_pool, user_id, "source-1", source_url, "example.com", fields, None
-    )
+        fields = {
+            "title": "Test Article",
+            "published_at": "2024-01-01",
+            "recommendation": "high",
+            "quality_score": 0.8,
+            "confidence_score": 0.9,
+            "summary": "A test article",
+            "word_count": 100,
+        }
 
-    # Should return False (no new candidate created)
-    assert result is False
-    # Should NOT call INSERT
-    mock_conn.execute.assert_not_called()
+        result = await _create_candidate_with_evidence(
+            mock_pool, user_id, "source-1", source_url, "example.com", fields, None
+        )
+
+    # Should return True (new candidate WAS created, even though an approved one exists)
+    assert result is True
+    # Should have called execute once (INSERT into candidates)
+    assert mock_conn.execute.call_count == 1
+    # Verify the INSERT statement
+    call_args = mock_conn.execute.call_args
+    assert "INSERT INTO candidates" in call_args[0][0]
 
 
 @pytest.mark.asyncio
