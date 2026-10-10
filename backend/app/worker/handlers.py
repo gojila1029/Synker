@@ -687,6 +687,7 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                 if isinstance(extracted, list):
                     # Folder extraction: process each file result
                     folder_created = 0
+                    failed_count = 0
                     for item in extracted:
                         # Skip items with no text AND an error (unsupported files)
                         if item.error and not item.text:
@@ -702,6 +703,7 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                                         "error": item.error,
                                     }),
                                 )
+                            failed_count += 1
                             continue
 
                         fields = _candidate_fields(item, source["title"], domain)
@@ -717,12 +719,30 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                             folder_created += 1
                             created += 1
 
-                    async with pool.acquire() as conn:
-                        await conn.execute(
-                            "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
-                            source["id"],
-                            user_id,
-                        )
+                    # If all files in folder failed, mark source as failed and skip final override
+                    if len(extracted) > 0 and failed_count == len(extracted) and folder_created == 0:
+                        async with pool.acquire() as conn:
+                            await conn.execute(
+                                """INSERT INTO processing_log
+                                   (user_id, entity_type, entity_id, action, details)
+                                   VALUES ($1, 'source', $2, 'extraction_failed', $3::jsonb)""",
+                                user_id,
+                                source["id"],
+                                json.dumps({"reason": "all_files_failed"}),
+                            )
+                            await conn.execute(
+                                "UPDATE sources SET status='failed' WHERE id=$1 AND user_id=$2",
+                                source["id"],
+                                user_id,
+                            )
+                        skipped_discovery_ids.append(source["id"])
+                    else:
+                        async with pool.acquire() as conn:
+                            await conn.execute(
+                                "UPDATE sources SET status='processing' WHERE id=$1 AND user_id=$2",
+                                source["id"],
+                                user_id,
+                            )
                 else:
                     # Single file extraction (backward compat)
                     # If extraction failed (empty text + error set), mark source as failed
@@ -742,6 +762,7 @@ async def _analysis_handler(job: dict[str, Any], progress: ProgressFn, pool: Any
                                 source["id"],
                                 user_id,
                             )
+                        skipped_discovery_ids.append(source["id"])
                         continue  # Skip candidate creation for failed sources
 
                     fields = _candidate_fields(extracted, source["title"], domain)

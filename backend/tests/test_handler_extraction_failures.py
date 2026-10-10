@@ -216,3 +216,56 @@ async def test_note_gen_includes_extraction_error_in_message(monkeypatch):
     error_msg = str(exc_info.value)
     assert "Connection refused" in error_msg
     assert "extraction failed" in error_msg.lower() or "Source extraction failed" in error_msg
+
+
+@pytest.mark.asyncio
+async def test_analysis_handler_failed_source_not_overridden_to_done(monkeypatch):
+    """When a source extraction fails and status='failed' is set, the source ID
+    must be added to skipped_discovery_ids to prevent the final UPDATE that
+    overrides status to 'done'. This is the bug fix for folder/file extractions
+    failing silently."""
+
+    # Mock adapter_extract to return failed extraction
+    async def _mock_extract_fail(source_type, source_url):
+        return ExtractedContent(text="", title="", error="File not accessible")
+
+    monkeypatch.setattr(handlers, "adapter_extract", _mock_extract_fail)
+
+    # Setup: one source that will fail extraction
+    source_row = {
+        "id": "src-fail",
+        "type": "web",
+        "url": "https://example.com/missing",
+        "title": "Missing File",
+        "source_scope": "direct_resource",
+    }
+
+    conn = FakeConn(fetch_result=[source_row])
+    pool = FakePool(conn)
+
+    job = {"id": "job-fail", "user_id": "user-fail", "type": "Analysis"}
+
+    result = await handlers._analysis_handler(job, _noop_progress, pool)
+
+    # Verify: no candidates created (0 candidates in result)
+    assert "0 candidate(s) created" in result
+
+    # Verify: source was marked as failed
+    failed_updates = [
+        stmt for stmt in conn.executed
+        if "UPDATE sources SET status='failed'" in stmt[0]
+    ]
+    assert len(failed_updates) == 1
+    assert failed_updates[0][1] == ("src-fail", "user-fail")
+
+    # CRITICAL: Verify that there is NO UPDATE to status='done' for this source
+    # This is the bug we're fixing: the final override at line 763-770 should
+    # NOT run for failed sources
+    done_updates = [
+        stmt for stmt in conn.executed
+        if "UPDATE sources SET status='done'" in stmt[0]
+    ]
+    # If ANY done_updates exist, they must not include our failed source
+    for stmt in done_updates:
+        # Check if 'src-fail' is in the ANY() list
+        assert "src-fail" not in str(stmt)
