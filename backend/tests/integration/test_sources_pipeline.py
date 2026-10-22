@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from app.adapters.base import ExtractedContent
+from app.worker import handlers
 from app.worker.handlers import _analysis_handler, _candidate_fields
 
 
@@ -766,7 +767,7 @@ def test_duplicate_score_is_float_in_valid_range():
 
 
 @pytest.mark.asyncio
-async def test_source_status_transitions_to_done():
+async def test_source_status_transitions_to_done(monkeypatch):
     """AC-016: Source status transitions after extraction.
 
     GIVEN a source has status 'queued' before extraction
@@ -805,7 +806,13 @@ async def test_source_status_transitions_to_done():
         source_type="pdf",
     )
 
-    with patch("app.adapters.extract") as mock_extract:
+    # Mock similarity computation to avoid database queries
+    async def _mock_similarity(pool, user_id, text, title):
+        return 0.1
+
+    monkeypatch.setattr(handlers, "_compute_candidate_similarity", _mock_similarity)
+
+    with patch("app.worker.handlers.adapter_extract") as mock_extract:
         mock_extract.return_value = mock_extracted
 
         await _analysis_handler(

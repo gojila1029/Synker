@@ -2,7 +2,7 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
-import asyncpg
+import asyncpg  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import get_current_user, get_db
@@ -28,19 +28,28 @@ async def trigger_discovery(
     count = await db.fetchval("SELECT COUNT(*) FROM sources WHERE user_id=$1", uid)
     if not count:
         raise HTTPException(status_code=400, detail="No sources found — add some first")
-    row = await db.fetchrow(
-        "INSERT INTO jobs (user_id, source_title, type) "
-        "VALUES ($1, 'Discovery Run', 'Analysis') RETURNING id",
-        uid,
-    )
-    if row is not None:
+    # Re-queue done/processing sources so the Analysis handler picks them up again.
+    # Failed sources are intentionally excluded — they require explicit per-source reset.
+    # Wrap both UPDATE + INSERT in a transaction so they succeed or fail together.
+    async with db.transaction():
         await db.execute(
-            "INSERT INTO processing_log (user_id, entity_type, entity_id, action, details) "
-            "VALUES ($1, 'job', $2, 'created', $3::jsonb)",
+            "UPDATE sources SET status='queued', updated_at=now() "
+            "WHERE user_id=$1 AND status IN ('done', 'processing')",
             uid,
-            row["id"],
-            '{"message": "Discovery run triggered"}',
         )
+        row = await db.fetchrow(
+            "INSERT INTO jobs (user_id, source_title, type) "
+            "VALUES ($1, 'Discovery Run', 'Analysis') RETURNING id",
+            uid,
+        )
+        if row is not None:
+            await db.execute(
+                "INSERT INTO processing_log (user_id, entity_type, entity_id, action, details) "
+                "VALUES ($1, 'job', $2, 'created', $3::jsonb)",
+                uid,
+                row["id"],
+                '{"message": "Discovery run triggered"}',
+            )
     return {"triggered": True, "jobId": str(row["id"]) if row else None}
 
 

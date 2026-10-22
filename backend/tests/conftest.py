@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from unittest.mock import patch
 
 # Set required secrets before importing app so pydantic-settings validators pass in tests
@@ -32,6 +33,11 @@ class MockConn:
 
     async def execute(self, *args, **kwargs):  # type: ignore[override]
         return None
+
+    @asynccontextmanager
+    async def transaction(self):  # type: ignore[override]
+        """Mock transaction context manager — passes through."""
+        yield
 
 
 class MockConnWithSources(MockConn):
