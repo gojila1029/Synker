@@ -32,8 +32,8 @@ async def test_md_file(tmp_path: Path):
 @pytest.mark.asyncio
 async def test_unsupported_extension_returns_error(tmp_path: Path):
     """Unsupported file types return ExtractedContent with error field (not raise)."""
-    f = tmp_path / "doc.docx"
-    f.write_bytes(b"fake docx")
+    f = tmp_path / "doc.bin"
+    f.write_bytes(b"fake binary")
     result = await LocalAdapter().extract(str(f))
     assert result.error is not None
     assert "not supported" in result.error.lower()
