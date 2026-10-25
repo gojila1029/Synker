@@ -1,9 +1,9 @@
 name: Deploy to Railway Staging
 
+# Manual only. Railway's GitHub integration already deploys staging on every
+# push to synker-v1; running this on push as well would double-deploy.
 on:
-  push:
-    branches:
-      - synker-v1
+  workflow_dispatch:
 
 concurrency:
   group: deploy-staging
