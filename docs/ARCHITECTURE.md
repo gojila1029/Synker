@@ -988,25 +988,31 @@ uv run pytest -q             # tests
 
 # Frontend
 cd "AI Knowledge Curation Platform"
-pnpm exec tsc --noEmit       # type check
 pnpm test --run              # unit tests
 ```
 
 ### Feature Development Pipeline
 
-Every non-trivial change follows a mandatory agent pipeline:
+Every non-trivial change follows the Claude Harness v4 agent pipeline (see `CLAUDE.md`, `.claude/agents/`, `.claude/commands/`). Run it with `/autopilot <task>`.
 
 ```
-1. planner          → Implementation contract + acceptance criteria
-2. implementer      → Code changes (returns IMPLEMENTED)
-3. test-verifier    → Static + unit gates (returns PASS/FAIL)
-4. runtime-verifier → Browser E2E on staging via Playwright MCP
-5. independent-reviewer → Code review
-6. repair-analyst   → If any gate FAIL more than once
+0. orchestrator (main session) → runs the grill-me interview with the user; never writes app code
+1. spec-interviewer   → .planning/PRD.md and atomic .planning/tasks/task-NN-brief.md
+2. ui-taste-designer | clean-implementer → one brief at a time, test first (IMPLEMENTED / FAILED / BLOCKED)
+3. reviewbench-judge  → read-only reviewer
+                        Gate 1: scripts/verify/verify_feature.py
+                        Gate 2: diff vs brief
+                        Gate 3: scripts/harness/eval-reviewbench.py (F0.5 >= 0.85, 0 critical)
+4. devops-shipper     → licence scan, staging E2E, then stops for user approval before any push, migration or deploy
 ```
 
-Runtime verification must target the staging URL. Localhost evidence is not accepted.
-DONE is declared only when all applicable gates pass.
+Rules:
+- The implementer never reviews its own work. A BLOCKED gate (for example `uv` missing) is never reported as PASS.
+- Runtime verification must target the staging URL. Localhost evidence is not accepted.
+- Budget is $3.00 per task (`.planning/budget-ledger.json`). Evidence goes in `verification/evidence/<run-id>/`.
+- Hooks in `.claude/hooks/` block force-push, hard reset, `.env` access, secrets in commands or file content,
+  Supabase db reset/push, and edits to the harness config.
+- DONE is declared only when all applicable gates pass.
 
 ### Git Convention
 
