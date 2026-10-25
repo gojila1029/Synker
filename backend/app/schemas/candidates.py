@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -16,8 +16,8 @@ class Candidate(CamelModel):
     source_info: str
     domain: str
     published_at: str
-    topic_id: Optional[str] = None
-    source_id: Optional[str] = None
+    topic_id: str | None = None
+    source_id: str | None = None
     recommendation: Literal["process", "merge", "skip", "review"]
     quality_score: float
     confidence_score: float

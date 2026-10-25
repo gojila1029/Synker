@@ -553,7 +553,9 @@ async def test_web_no_content_marks_low_quality():
         )
 
     # Extraction succeeded (no error), even though text is empty, so candidate IS created
-    assert "1 candidate" in result, f"Expected 1 candidate for low-quality extraction, got: {result}"
+    assert "1 candidate" in result, (
+        f"Expected 1 candidate for low-quality extraction, got: {result}"
+    )
 
 
 # ─── AC-012: HTTP Error Handling ───────────────────────────────────────────────
@@ -955,7 +957,9 @@ async def test_folder_source_creates_multiple_candidates():
         )
 
     # Should create candidates for file1 and file2 (file3 is unsupported)
-    assert "2 candidate" in result, f"Expected 2 candidates (3 files - 1 unsupported), got: {result}"
+    assert "2 candidate" in result, (
+        f"Expected 2 candidates (3 files - 1 unsupported), got: {result}"
+    )
 
     # Verify 2 candidate INSERTs
     candidate_calls = [
@@ -1018,7 +1022,7 @@ async def test_folder_source_idempotent_on_rerun():
         mock_extract.return_value = [file1]
 
         # First run
-        result1 = await _analysis_handler(
+        await _analysis_handler(
             {"user_id": user_id, "job_type": "analysis"},
             progress,
             mock_pool,

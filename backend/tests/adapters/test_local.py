@@ -190,7 +190,9 @@ async def test_extract_folder_supported_types_only(tmp_path: Path):
 
     # Should have exactly 2 supported files
     supported_results = [r for r in result if not r.error or r.text]
-    assert len(supported_results) >= 2, f"Expected at least 2 supported files, got {len(supported_results)}"
+    assert len(supported_results) >= 2, (
+        f"Expected at least 2 supported files, got {len(supported_results)}"
+    )
 
     titles = [r.title for r in result]
     assert "doc" in titles

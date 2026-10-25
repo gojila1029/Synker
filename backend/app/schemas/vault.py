@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -14,7 +14,7 @@ class VaultNode(BaseModel):
     name: str
     path: str
     type: Literal["file", "folder"]
-    children: Optional[list["VaultNode"]] = None
+    children: list["VaultNode"] | None = None
 
 
 VaultNode.model_rebuild()

@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -21,6 +21,6 @@ class Job(CamelModel):
     progress: int
     started_at: str
     duration: str
-    error: Optional[str] = None
-    error_code: Optional[str] = None
-    artifact_path: Optional[str] = None
+    error: str | None = None
+    error_code: str | None = None
+    artifact_path: str | None = None

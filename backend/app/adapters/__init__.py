@@ -1,21 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from app.adapters import local, pdf, web, youtube
 from app.adapters.base import ExtractedContent
 
-_REGISTRY: dict[str, Callable[[str], "Awaitable[ExtractedContent]"]] = {
+if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+_REGISTRY: dict[str, Callable[[str], Awaitable[ExtractedContent]]] = {
     "youtube": youtube.extract,
     "web": web.extract,
     "pdf": pdf.extract,
     "local": local.extract,
 }
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from typing import Awaitable
 
 
 async def extract(source_type: str, url: str) -> ExtractedContent:

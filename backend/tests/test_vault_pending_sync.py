@@ -4,7 +4,7 @@ exact SQL/args passed to the connection can be inspected, complementing the
 route-level 200-check in test_routes.py.
 """
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
 import pytest
@@ -107,7 +107,7 @@ async def test_acknowledged_rows_are_not_rewritten_by_the_endpoint_itself():
     breaking the updatedSince cursor for other callers)."""
     conn = AsyncMock()
     conn.fetch = AsyncMock(return_value=[
-        {"path": "a.md", "content": "A", "frontmatter": {}, "last_modified": datetime.now(timezone.utc)},
+        {"path": "a.md", "content": "A", "frontmatter": {}, "last_modified": datetime.now(UTC)},
     ])
 
     await get_pending_sync(updated_since=None, current_user=_user(USER_A), db=conn)

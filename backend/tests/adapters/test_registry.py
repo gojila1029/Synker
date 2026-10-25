@@ -1,9 +1,9 @@
 """Tests for the adapter registry."""
-from app.adapters.registry import get_adapter
-from app.adapters.youtube import YoutubeAdapter
-from app.adapters.web import WebAdapter
-from app.adapters.pdf import PdfAdapter
 from app.adapters.local import LocalAdapter
+from app.adapters.pdf import PdfAdapter
+from app.adapters.registry import get_adapter
+from app.adapters.web import WebAdapter
+from app.adapters.youtube import YoutubeAdapter
 
 
 def test_youtube_adapter():

@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
@@ -14,8 +14,8 @@ class Note(CamelModel):
     id: str
     title: str
     source: str
-    topic_id: Optional[str] = None
-    source_id: Optional[str] = None
+    topic_id: str | None = None
+    source_id: str | None = None
     generated_at: str
     ai_action: Literal["created", "merged", "updated", "skipped"]
     quality_score: float
@@ -25,4 +25,4 @@ class Note(CamelModel):
     citations: list[str]
     wiki_links: list[str]
     similarity_reasoning: str
-    similar_to: Optional[str] = None
+    similar_to: str | None = None
